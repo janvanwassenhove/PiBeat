@@ -13,6 +13,9 @@ lerna-debug.log*
 *test_out.txt
 *test_err.txt
 
+# SuperCollider download cache
+.sc-download/
+
 node_modules
 dist
 dist-ssr
