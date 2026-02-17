@@ -25,6 +25,7 @@ const Toolbar: React.FC = () => {
     masterVolume,
     bpm,
     scStatus,
+    theme,
     runCode,
     stopAudio,
     setVolume,
@@ -190,8 +191,8 @@ const Toolbar: React.FC = () => {
               : 'Click to initialize SuperCollider (requires SC installed)'
           }
           style={{
-            color: scStatus.enabled ? '#00ff88' : scStatus.available ? '#ffa500' : undefined,
-            borderColor: scStatus.enabled ? '#00ff88' : undefined,
+            color: scStatus.enabled ? (theme === 'sonicpi' ? '#ff59b2' : '#00ff88') : scStatus.available ? '#ffa500' : undefined,
+            borderColor: scStatus.enabled ? (theme === 'sonicpi' ? '#ff59b2' : '#00ff88') : undefined,
           }}
         >
           <FaSuperCollider />

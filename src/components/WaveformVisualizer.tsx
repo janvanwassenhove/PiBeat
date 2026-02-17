@@ -4,7 +4,7 @@ import { useStore } from '../store';
 const WaveformVisualizer: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const animationRef = useRef<number>(0);
-  const { waveform, updateWaveform, isPlaying } = useStore();
+  const { waveform, updateWaveform, isPlaying, theme } = useStore();
 
   const draw = useCallback(() => {
     const canvas = canvasRef.current;
@@ -16,16 +16,24 @@ const WaveformVisualizer: React.FC = () => {
     const { width, height } = canvas;
     const midY = height / 2;
 
+    const isSonicPi = theme === 'sonicpi';
+    const waveColor = isSonicPi ? '#ff59b2' : '#00ff88';
+    const bgTop = isSonicPi ? '#0a0a0a' : '#0d0d2b';
+    const bgMid = isSonicPi ? '#0e0e0e' : '#121233';
+    const centerLineColor = isSonicPi ? '#1a1a1a' : '#222255';
+    const gridColor = isSonicPi ? '#141414' : '#1a1a40';
+    const fillR = isSonicPi ? '255, 89, 178' : '0, 255, 136';
+
     // Clear with gradient background
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
-    gradient.addColorStop(0, '#0d0d2b');
-    gradient.addColorStop(0.5, '#121233');
-    gradient.addColorStop(1, '#0d0d2b');
+    gradient.addColorStop(0, bgTop);
+    gradient.addColorStop(0.5, bgMid);
+    gradient.addColorStop(1, bgTop);
     ctx.fillStyle = gradient;
     ctx.fillRect(0, 0, width, height);
 
     // Draw center line
-    ctx.strokeStyle = '#222255';
+    ctx.strokeStyle = centerLineColor;
     ctx.lineWidth = 1;
     ctx.beginPath();
     ctx.moveTo(0, midY);
@@ -33,7 +41,7 @@ const WaveformVisualizer: React.FC = () => {
     ctx.stroke();
 
     // Draw grid lines
-    ctx.strokeStyle = '#1a1a40';
+    ctx.strokeStyle = gridColor;
     ctx.lineWidth = 0.5;
     for (let i = 1; i < 4; i++) {
       const y = (height / 4) * i;
@@ -49,11 +57,11 @@ const WaveformVisualizer: React.FC = () => {
     const step = waveform.length / width;
     
     // Glow effect
-    ctx.shadowColor = '#00ff88';
+    ctx.shadowColor = waveColor;
     ctx.shadowBlur = 8;
     
     // Main waveform line
-    ctx.strokeStyle = '#00ff88';
+    ctx.strokeStyle = waveColor;
     ctx.lineWidth = 2;
     ctx.beginPath();
 
@@ -73,9 +81,9 @@ const WaveformVisualizer: React.FC = () => {
     // Draw filled area under waveform
     ctx.shadowBlur = 0;
     const fillGradient = ctx.createLinearGradient(0, 0, 0, height);
-    fillGradient.addColorStop(0, 'rgba(0, 255, 136, 0.15)');
-    fillGradient.addColorStop(0.5, 'rgba(0, 255, 136, 0.05)');
-    fillGradient.addColorStop(1, 'rgba(0, 255, 136, 0.15)');
+    fillGradient.addColorStop(0, `rgba(${fillR}, 0.15)`);
+    fillGradient.addColorStop(0.5, `rgba(${fillR}, 0.05)`);
+    fillGradient.addColorStop(1, `rgba(${fillR}, 0.15)`);
     ctx.fillStyle = fillGradient;
     ctx.beginPath();
     ctx.moveTo(0, midY);
@@ -90,7 +98,7 @@ const WaveformVisualizer: React.FC = () => {
     ctx.fill();
 
     // Draw a secondary lower-opacity waveform for depth
-    ctx.strokeStyle = 'rgba(100, 200, 255, 0.3)';
+    ctx.strokeStyle = isSonicPi ? 'rgba(255, 221, 0, 0.25)' : 'rgba(100, 200, 255, 0.3)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let x = 0; x < width; x++) {
@@ -104,7 +112,7 @@ const WaveformVisualizer: React.FC = () => {
       }
     }
     ctx.stroke();
-  }, [waveform]);
+  }, [waveform, theme]);
 
   useEffect(() => {
     const canvas = canvasRef.current;

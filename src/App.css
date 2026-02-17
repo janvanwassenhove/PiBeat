@@ -38,73 +38,489 @@
 
 /* Sonic Pi Classic Theme */
 [data-theme="sonicpi"] {
-  --bg-primary: #1e1e1e;
-  --bg-secondary: #252526;
-  --bg-tertiary: #2d2d30;
-  --bg-hover: #3e3e42;
-  --bg-active: #4a4a4f;
+  --bg-primary: #0a0a0a;
+  --bg-secondary: #111111;
+  --bg-tertiary: #1a1a1a;
+  --bg-hover: #252525;
+  --bg-active: #303030;
 
-  --text-primary: #d4d4d4;
-  --text-secondary: #969696;
-  --text-muted: #5a5a5a;
+  --text-primary: #ffffff;
+  --text-secondary: #cccccc;
+  --text-muted: #666666;
 
   --accent-green: #5ec44f;
   --accent-green-dim: #4ea53f;
-  --accent-blue: #568af2;
-  --accent-purple: #c678dd;
-  --accent-red: #e06c75;
-  --accent-orange: #d19a66;
-  --accent-yellow: #e5c07b;
-  --accent-cyan: #56b6c2;
+  --accent-blue: #ff59b2;
+  --accent-purple: #ff59b2;
+  --accent-red: #ff4466;
+  --accent-orange: #ffdd00;
+  --accent-yellow: #ffdd00;
+  --accent-cyan: #ff59b2;
 
-  --border-color: #3c3c3c;
-  --border-active: #f0529c;
+  --border-color: #2a2a2a;
+  --border-active: #ff59b2;
 
-  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.4);
-  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.5);
-  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-sm: 0 1px 3px rgba(0, 0, 0, 0.6);
+  --shadow-md: 0 4px 12px rgba(0, 0, 0, 0.7);
+  --shadow-lg: 0 8px 24px rgba(0, 0, 0, 0.8);
 }
 
-/* Sonic Pi theme overrides for accent-driven elements */
+/* ═══════════════════════════════════════════════════════════════════
+   SONIC PI THEME — Full scope overrides
+   Dark black backgrounds, bright pink/yellow/white accents
+   ═══════════════════════════════════════════════════════════════════ */
+
+/* Logo & branding */
 [data-theme="sonicpi"] .logo-icon {
-  color: #f0529c;
-  text-shadow: 0 0 10px #f0529c;
+  color: #ff59b2;
+  text-shadow: 0 0 12px #ff59b2;
 }
 
 [data-theme="sonicpi"] .logo-text {
-  background: linear-gradient(135deg, #f0529c, #c678dd);
+  background: linear-gradient(135deg, #ff59b2, #ffdd00);
   -webkit-background-clip: text;
   -webkit-text-fill-color: transparent;
 }
 
+/* Run / Stop / Record buttons */
 [data-theme="sonicpi"] .run-btn {
-  background: linear-gradient(135deg, #2e4a2e, #1e3a1e);
+  background: linear-gradient(135deg, #1a3a1a, #0d260d);
   border-color: #4ea53f;
   color: #5ec44f;
 }
 
 [data-theme="sonicpi"] .run-btn:hover {
-  background: linear-gradient(135deg, #3a5c3a, #2a4a2a);
-  box-shadow: 0 0 12px rgba(94, 196, 79, 0.3);
+  background: linear-gradient(135deg, #264d26, #1a3a1a);
+  box-shadow: 0 0 14px rgba(94, 196, 79, 0.4);
+}
+
+[data-theme="sonicpi"] .run-btn.playing {
+  animation: sp-pulse-green 1.5s infinite;
 }
 
 [data-theme="sonicpi"] .stop-btn {
-  color: #e06c75;
+  background: linear-gradient(135deg, #3a1010, #260808);
+  border-color: #883333;
+  color: #ff4466;
+}
+
+[data-theme="sonicpi"] .stop-btn:hover {
+  background: linear-gradient(135deg, #4d1a1a, #3a1010);
+  box-shadow: 0 0 12px rgba(255, 68, 102, 0.3);
 }
 
 [data-theme="sonicpi"] .rec-btn.recording {
-  border-color: #e06c75;
-  color: #e06c75;
+  background: #2d0a0a;
+  border-color: #ff4466;
+  color: #ff4466;
+}
+
+@keyframes sp-pulse-green {
+  0%, 100% { box-shadow: 0 0 4px rgba(94, 196, 79, 0.3); }
+  50% { box-shadow: 0 0 16px rgba(94, 196, 79, 0.5); }
+}
+
+/* Toolbar buttons & controls */
+[data-theme="sonicpi"] .toolbar-btn {
+  background: #161616;
+  border-color: #2a2a2a;
+  color: #ffffff;
+}
+
+[data-theme="sonicpi"] .toolbar-btn:hover {
+  background: #252525;
+  border-color: #ff59b2;
 }
 
 [data-theme="sonicpi"] .panel-btn-active {
-  color: #f0529c;
-  border-color: #f0529c;
+  background: #1f0a16 !important;
+  border-color: #ff59b2 !important;
+  color: #ff59b2 !important;
+}
+
+[data-theme="sonicpi"] .volume-slider::-webkit-slider-thumb {
+  background: #ff59b2;
+  box-shadow: 0 0 6px rgba(255, 89, 178, 0.5);
+}
+
+[data-theme="sonicpi"] .bpm-input {
+  background: #0a0a0a;
+  border-color: #2a2a2a;
+  color: #ffffff;
+}
+
+[data-theme="sonicpi"] .bpm-input:focus {
+  border-color: #ff59b2;
+}
+
+/* Buffer tabs */
+[data-theme="sonicpi"] .buffer-tabs {
+  background: #111111;
+  border-bottom-color: #2a2a2a;
+}
+
+[data-theme="sonicpi"] .buffer-tab {
+  color: #666666;
+}
+
+[data-theme="sonicpi"] .buffer-tab:hover {
+  color: #cccccc;
+  background: rgba(255, 255, 255, 0.03);
 }
 
 [data-theme="sonicpi"] .buffer-tab.active {
-  color: #f0529c;
-  border-bottom-color: #f0529c;
+  color: #ff59b2;
+  border-bottom-color: #ff59b2;
+  background: rgba(255, 89, 178, 0.06);
+}
+
+/* View mode toggle */
+[data-theme="sonicpi"] .view-toggle-btn.active {
+  background: #ff59b2;
+  color: #000000;
+  box-shadow: 0 0 8px rgba(255, 89, 178, 0.35);
+}
+
+/* Waveform */
+[data-theme="sonicpi"] .waveform-container {
+  background: #0a0a0a;
+}
+
+[data-theme="sonicpi"] .status-dot.active {
+  background: #ff59b2;
+  box-shadow: 0 0 8px #ff59b2;
+}
+
+/* Log panel */
+[data-theme="sonicpi"] .log-panel {
+  background: #111111;
+  border-left-color: #2a2a2a;
+}
+
+[data-theme="sonicpi"] .log-info .log-level { color: #ff59b2; }
+[data-theme="sonicpi"] .log-error .log-level { color: #ff4466; }
+[data-theme="sonicpi"] .log-error .log-message { color: #ff4466; }
+[data-theme="sonicpi"] .log-warning .log-level { color: #ffdd00; }
+[data-theme="sonicpi"] .log-warning .log-message { color: #ffdd00; }
+
+[data-theme="sonicpi"] .log-clear-btn:hover {
+  color: #ff4466;
+}
+
+/* Side panels */
+[data-theme="sonicpi"] .side-panel-area {
+  background: #111111;
+  border-left-color: #2a2a2a;
+}
+
+[data-theme="sonicpi"] .panel-header {
+  border-bottom-color: #2a2a2a;
+}
+
+[data-theme="sonicpi"] .panel-header h3 {
+  color: #ffffff;
+}
+
+/* Sample browser */
+[data-theme="sonicpi"] .category-title {
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .sample-play-btn:hover {
+  color: #ffdd00;
+  border-color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .sample-insert-btn:hover {
+  color: #ff59b2;
+  border-color: #ff59b2;
+}
+
+/* Synth browser */
+[data-theme="sonicpi"] .synth-code {
+  color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .synth-filter-input {
+  background: #0a0a0a;
+  border-color: #2a2a2a;
+  color: #ffffff;
+}
+
+[data-theme="sonicpi"] .synth-filter-input:focus {
+  border-color: #ff59b2;
+}
+
+/* Effects panel */
+[data-theme="sonicpi"] .effect-group input[type="range"]::-webkit-slider-thumb {
+  background: #ff59b2;
+  box-shadow: 0 0 4px rgba(255, 89, 178, 0.4);
+}
+
+[data-theme="sonicpi"] .preset-buttons button:hover {
+  color: #ff59b2;
+  border-color: #ff59b2;
+}
+
+/* Help panel */
+[data-theme="sonicpi"] .help-content h4 {
+  color: #ffdd00;
+  border-bottom-color: #2a2a2a;
+}
+
+[data-theme="sonicpi"] .help-content pre {
+  background: #0a0a0a;
+  border-color: #2a2a2a;
+  color: #ffffff;
+}
+
+[data-theme="sonicpi"] .param-list code {
+  color: #ff59b2;
+  background: #0a0a0a;
+}
+
+/* Agent chat */
+[data-theme="sonicpi"] .agent-welcome-title {
+  background: linear-gradient(135deg, #ff59b2, #ffdd00);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+}
+
+[data-theme="sonicpi"] .agent-quick-btn:hover {
+  border-color: #ff59b2;
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .agent-msg-user .agent-msg-label {
+  color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .agent-msg-assistant .agent-msg-label {
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .agent-msg-user .agent-msg-content {
+  background: rgba(255, 221, 0, 0.06);
+  border-color: rgba(255, 221, 0, 0.15);
+}
+
+[data-theme="sonicpi"] .agent-msg-assistant .agent-msg-content {
+  background: rgba(255, 89, 178, 0.04);
+  border-color: rgba(255, 89, 178, 0.1);
+}
+
+[data-theme="sonicpi"] .agent-inline-code {
+  color: #ff59b2;
+  background: #0a0a0a;
+  border-color: #2a2a2a;
+}
+
+[data-theme="sonicpi"] .agent-code-block pre {
+  background: #0a0a0a;
+}
+
+[data-theme="sonicpi"] .agent-insert-btn:hover {
+  color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .agent-replace-btn:hover {
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .agent-thinking .dot {
+  background: #ff59b2;
+}
+
+[data-theme="sonicpi"] .agent-input {
+  background: #0a0a0a;
+  border-color: #2a2a2a;
+  color: #ffffff;
+}
+
+[data-theme="sonicpi"] .agent-input:focus {
+  border-color: #ff59b2;
+  box-shadow: 0 0 0 1px rgba(255, 89, 178, 0.2);
+}
+
+[data-theme="sonicpi"] .agent-send-btn {
+  background: linear-gradient(135deg, #2a0a1a, #1a0510);
+  border-color: #ff59b2;
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .agent-send-btn:hover:not(:disabled) {
+  background: linear-gradient(135deg, #3a1528, #2a0a1a);
+  box-shadow: 0 0 10px rgba(255, 89, 178, 0.3);
+}
+
+[data-theme="sonicpi"] .agent-select:hover,
+[data-theme="sonicpi"] .agent-select:focus {
+  border-color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .agent-settings-input:focus {
+  border-color: #ff59b2;
+  box-shadow: 0 0 0 2px rgba(255, 89, 178, 0.2);
+}
+
+[data-theme="sonicpi"] .agent-settings-btn.save {
+  background: linear-gradient(135deg, #2a0a1a, #1a0510);
+  border-color: #ff59b2;
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .agent-settings-btn.save:hover {
+  background: linear-gradient(135deg, #3a1528, #2a0a1a);
+  box-shadow: 0 0 10px rgba(255, 89, 178, 0.3);
+}
+
+[data-theme="sonicpi"] .settings-hint a {
+  color: #ff59b2;
+}
+
+/* Cue panel */
+[data-theme="sonicpi"] .cue-panel {
+  background: #111111;
+}
+
+[data-theme="sonicpi"] .cue-title {
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .cue-header {
+  background: linear-gradient(to bottom, rgba(255, 89, 178, 0.06), transparent);
+}
+
+[data-theme="sonicpi"] .cue-entry {
+  background: rgba(255, 89, 178, 0.04);
+  border-left-color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .cue-entry:hover {
+  background: rgba(255, 89, 178, 0.08);
+  border-left-color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .cue-name {
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .cue-icon {
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .cue-empty-icon {
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .cue-footer {
+  background: rgba(255, 89, 178, 0.03);
+}
+
+/* Timeline */
+[data-theme="sonicpi"] .timeline-view {
+  background: #0a0a0a;
+}
+
+[data-theme="sonicpi"] .timeline-toolbar {
+  background: #111111;
+  border-bottom-color: #2a2a2a;
+}
+
+[data-theme="sonicpi"] .timeline-ruler-row {
+  background: #111111;
+}
+
+[data-theme="sonicpi"] .timeline-ruler-spacer {
+  background: #111111;
+}
+
+[data-theme="sonicpi"] .track-header {
+  background: #111111;
+}
+
+[data-theme="sonicpi"] .track-ctrl-btn.active {
+  background: #ffdd00;
+  color: #000000;
+  border-color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .track-amp-slider input[type="range"]::-webkit-slider-thumb {
+  background: #ff59b2;
+  box-shadow: 0 0 4px rgba(255, 89, 178, 0.5);
+}
+
+[data-theme="sonicpi"] .track-effects-amp input[type="range"]::-webkit-slider-thumb {
+  background: #ff59b2;
+}
+
+[data-theme="sonicpi"] .track-effect-name {
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .track-effect-header {
+  background: rgba(255, 89, 178, 0.08);
+}
+
+[data-theme="sonicpi"] .track-effect-param input[type="range"]::-webkit-slider-thumb {
+  background: #ff59b2;
+}
+
+[data-theme="sonicpi"] .track-effects-add button {
+  background: rgba(255, 89, 178, 0.12);
+  border-color: rgba(255, 89, 178, 0.3);
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .track-effects-add button:hover {
+  background: rgba(255, 89, 178, 0.22);
+}
+
+[data-theme="sonicpi"] .clip-tooltip-name {
+  color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .clip-tooltip-type {
+  background: rgba(255, 89, 178, 0.2);
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .clip-tooltip-loop {
+  color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .clip-fx-badge {
+  background: rgba(255, 89, 178, 0.3);
+  color: #ff59b2;
+}
+
+[data-theme="sonicpi"] .timeline-writeback-btn {
+  background: rgba(255, 221, 0, 0.12);
+  border-color: rgba(255, 221, 0, 0.4);
+  color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .timeline-writeback-btn:hover {
+  background: rgba(255, 221, 0, 0.22);
+  border-color: #ffdd00;
+}
+
+[data-theme="sonicpi"] .ruler-section-label {
+  color: #ffdd00;
+  background: rgba(255, 221, 0, 0.12);
+}
+
+[data-theme="sonicpi"] .ruler-section-line {
+  background: #ffdd00;
+}
+
+/* Scrollbars */
+[data-theme="sonicpi"] ::-webkit-scrollbar-thumb {
+  background: #333333;
+}
+
+[data-theme="sonicpi"] ::-webkit-scrollbar-thumb:hover {
+  background: #555555;
 }
 
 * {
@@ -339,8 +755,8 @@ body {
 }
 
 [data-theme="sonicpi"] .theme-option.active {
-  background: #f0529c33;
-  color: #f0529c;
+  background: rgba(255, 89, 178, 0.18);
+  color: #ff59b2;
 }
 
 /* Toolbar */
