@@ -511,8 +511,8 @@ export const useStore = create<AppStore>((set, get) => ({
       set({ userSamplesDir: savedDir });
       try {
         await invoke('set_user_samples_dir', { dir: savedDir });
-        // Auto-scan saved directory
-        await get().scanUserSamples();
+        // Don't auto-scan on startup - user can click the scan button
+        // to avoid freezing if the directory is large
       } catch {
         // Directory might not exist anymore, just silently fail
       }

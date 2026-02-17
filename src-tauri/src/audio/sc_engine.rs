@@ -366,10 +366,6 @@ impl ScEngine {
             args.push(OscType::Float(*val));
         }
 
-        eprintln!("[SC play_note] def={}, node={}, out={}, freq={:.1}, amp={:.3} (raw={:.3}*vol={:.3}), sustain_time={:.3}, attack={:.3}, decay={:.3}, release={:.3}, sustain_level={:.3}, dur_secs={:.3}",
-            def_name, node_id, out_bus, frequency, amplitude * master_vol, amplitude, master_vol,
-            sustain_time, envelope.attack, envelope.decay, envelope.release, envelope.sustain, duration_secs);
-
         self.send_osc_msg("/s_new", args)?;
         self.state.lock().is_playing = true;
         Ok(())
@@ -821,41 +817,13 @@ impl ScEngine {
             cmd.current_dir(parent);
         }
 
-        let mut child = cmd
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
+        let child = cmd
+            .stdout(Stdio::inherit())
+            .stderr(Stdio::inherit())
             .spawn()
             .map_err(|e| format!("Failed to start scsynth: {}", e))?;
 
         eprintln!("[SC] scsynth started with PID {}", child.id());
-
-        // Capture scsynth stderr in a background thread for diagnostics
-        if let Some(stderr) = child.stderr.take() {
-            std::thread::spawn(move || {
-                use std::io::{BufRead, BufReader};
-                let reader = BufReader::new(stderr);
-                for line in reader.lines() {
-                    match line {
-                        Ok(l) => eprintln!("[scsynth] {}", l),
-                        Err(_) => break,
-                    }
-                }
-            });
-        }
-        // Also capture stdout
-        if let Some(stdout) = child.stdout.take() {
-            std::thread::spawn(move || {
-                use std::io::{BufRead, BufReader};
-                let reader = BufReader::new(stdout);
-                for line in reader.lines() {
-                    match line {
-                        Ok(l) => eprintln!("[scsynth:out] {}", l),
-                        Err(_) => break,
-                    }
-                }
-            });
-        }
-
         *self.scsynth_process.lock() = Some(child);
 
         Ok(())
