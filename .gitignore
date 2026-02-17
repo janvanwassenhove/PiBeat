@@ -13,8 +13,9 @@ lerna-debug.log*
 *test_out.txt
 *test_err.txt
 
-# SuperCollider download cache
+# SuperCollider download cache and bundle (too large for GitHub)
 .sc-download/
+src-tauri/sc-bundle/
 
 node_modules
 dist
