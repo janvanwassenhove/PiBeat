@@ -1,4 +1,4 @@
-import React, { useRef } from 'react';
+import React, { useRef, useEffect } from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
 import { useStore } from '../store';
 
@@ -37,9 +37,10 @@ const SAMPLE_NAMES = [
 ];
 
 const CodeEditor: React.FC = () => {
-  const { buffers, activeBufferId, updateBufferCode } = useStore();
+  const { buffers, activeBufferId, updateBufferCode, theme } = useStore();
   const activeBuffer = buffers.find(b => b.id === activeBufferId);
   const editorRef = useRef<any>(null);
+  const monacoRef = useRef<any>(null);
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
@@ -139,7 +140,7 @@ const CodeEditor: React.FC = () => {
       },
     });
 
-    // Custom theme
+    // Custom theme — PiBeat (default)
     monaco.editor.defineTheme('sonicDark', {
       base: 'vs-dark',
       inherit: true,
@@ -162,7 +163,34 @@ const CodeEditor: React.FC = () => {
       },
     });
 
-    monaco.editor.setTheme('sonicDark');
+    // Custom theme — Sonic Pi Classic
+    monaco.editor.defineTheme('sonicPiClassic', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: 'comment', foreground: '6A9955', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'F0529C', fontStyle: 'bold' },
+        { token: 'type.identifier', foreground: '56B6C2' },
+        { token: 'variable', foreground: 'E5C07B' },
+        { token: 'number', foreground: 'D19A66' },
+        { token: 'string', foreground: '98C379' },
+      ],
+      colors: {
+        'editor.background': '#1e1e1e',
+        'editor.foreground': '#d4d4d4',
+        'editor.lineHighlightBackground': '#2a2a2a',
+        'editorCursor.foreground': '#f0529c',
+        'editor.selectionBackground': '#3e4451',
+        'editorLineNumber.foreground': '#5a5a5a',
+        'editorLineNumber.activeForeground': '#969696',
+      },
+    });
+
+    monacoRef.current = monaco;
+
+    // Apply theme based on current store state
+    const currentTheme = useStore.getState().theme;
+    monaco.editor.setTheme(currentTheme === 'sonicpi' ? 'sonicPiClassic' : 'sonicDark');
 
     // Key bindings
     editor.addAction({
@@ -198,12 +226,21 @@ const CodeEditor: React.FC = () => {
     });
   };
 
+  // Switch Monaco theme when app theme changes
+  useEffect(() => {
+    if (monacoRef.current) {
+      monacoRef.current.editor.setTheme(
+        theme === 'sonicpi' ? 'sonicPiClassic' : 'sonicDark'
+      );
+    }
+  }, [theme]);
+
   return (
     <div className="code-editor">
       <Editor
         height="100%"
         language="sonicpi"
-        theme="sonicDark"
+        theme={theme === 'sonicpi' ? 'sonicPiClassic' : 'sonicDark'}
         value={activeBuffer?.code || ''}
         onChange={(value) => {
           if (value !== undefined) {

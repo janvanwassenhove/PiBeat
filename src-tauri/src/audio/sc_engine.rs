@@ -74,10 +74,16 @@ pub struct ScEngine {
     next_node_id: AtomicI32,
     /// Next buffer ID (monotonically increasing)
     next_buffer_id: AtomicI32,
+    /// Next private bus ID for FX routing (starts after hardware outputs)
+    next_bus_id: AtomicI32,
     /// Map from sample file path to SC buffer number
     pub loaded_buffers: Mutex<HashMap<String, i32>>,
     /// Currently active FX node IDs
     active_fx_nodes: Mutex<Vec<i32>>,
+    /// FX bus stack: (bus_id, fx_node_id, fx_group_node_id)
+    /// When a with_fx block is entered, a private bus + FX synth are pushed.
+    /// Synths/samples inside the block output to the top-of-stack bus.
+    fx_bus_stack: Mutex<Vec<(i32, i32, i32)>>,
     /// Whether scsynth has booted and is ready
     is_booted: AtomicBool,
     /// Path to scsynth executable
@@ -156,8 +162,10 @@ impl ScEngine {
             sc_port: SC_PORT,
             next_node_id: AtomicI32::new(2000), // Start above our group IDs
             next_buffer_id: AtomicI32::new(1),   // Buffer 0 reserved for scope
+            next_bus_id: AtomicI32::new(16),     // Private buses start at 16 (after hardware)
             loaded_buffers: Mutex::new(HashMap::new()),
             active_fx_nodes: Mutex::new(Vec::new()),
+            fx_bus_stack: Mutex::new(Vec::new()),
             is_booted: AtomicBool::new(false),
             scsynth_path,
             sclang_path,
@@ -255,8 +263,9 @@ impl ScEngine {
                 duration_secs,
                 envelope,
                 pan,
+                params,
             } => {
-                self.play_note(synth_type, frequency, amplitude, duration_secs, &envelope, pan)
+                self.play_note(synth_type, frequency, amplitude, duration_secs, &envelope, pan, &params)
             }
             AudioCommand::PlaySample {
                 samples: _,
@@ -277,8 +286,6 @@ impl ScEngine {
             }
             AudioCommand::SetMasterVolume(vol) => {
                 self.state.lock().master_volume = vol;
-                // In SC, we could control a master volume node, but for simplicity
-                // we apply volume when creating synths
                 Ok(())
             }
             AudioCommand::Stop => self.stop_all(),
@@ -297,6 +304,12 @@ impl ScEngine {
                 lpf_cutoff,
                 hpf_cutoff,
             ),
+            AudioCommand::FxStart { fx_type, params } => {
+                self.push_fx_bus(&fx_type, &params)
+            }
+            AudioCommand::FxEnd => {
+                self.pop_fx_bus()
+            }
         }
     }
 
@@ -309,36 +322,51 @@ impl ScEngine {
         duration_secs: f32,
         envelope: &super::synth::Envelope,
         pan: f32,
+        params: &[(String, f32)],
     ) -> Result<(), String> {
         let node_id = self.alloc_node_id();
         let def_name = sc_synthdefs::synthdef_name(&synth_type);
         let master_vol = self.state.lock().master_volume;
 
-        let sustain_time = (duration_secs - envelope.attack - envelope.release).max(0.0);
+        // Determine output bus: if inside a with_fx block, route to the FX bus
+        let out_bus = self.current_out_bus();
 
-        self.send_osc_msg(
-            "/s_new",
-            vec![
-                OscType::String(def_name.to_string()),
-                OscType::Int(node_id),
-                OscType::Int(ADD_TO_HEAD),
-                OscType::Int(SOURCE_GROUP),
-                // Parameters
-                OscType::String("freq".to_string()),
-                OscType::Float(frequency),
-                OscType::String("amp".to_string()),
-                OscType::Float(amplitude * master_vol),
-                OscType::String("pan".to_string()),
-                OscType::Float(pan),
-                OscType::String("attack".to_string()),
-                OscType::Float(envelope.attack),
-                OscType::String("sustain".to_string()),
-                OscType::Float(sustain_time),
-                OscType::String("release".to_string()),
-                OscType::Float(envelope.release),
-            ],
-        )?;
+        // Compute sustain (hold time) from total duration minus envelope times
+        let sustain_time = (duration_secs - envelope.attack - envelope.decay - envelope.release).max(0.0);
 
+        let mut args = vec![
+            OscType::String(def_name.to_string()),
+            OscType::Int(node_id),
+            OscType::Int(ADD_TO_HEAD),
+            OscType::Int(SOURCE_GROUP),
+            // Core parameters
+            OscType::String("out".to_string()),
+            OscType::Int(out_bus),
+            OscType::String("freq".to_string()),
+            OscType::Float(frequency),
+            OscType::String("amp".to_string()),
+            OscType::Float(amplitude * master_vol),
+            OscType::String("pan".to_string()),
+            OscType::Float(pan),
+            OscType::String("attack".to_string()),
+            OscType::Float(envelope.attack),
+            OscType::String("decay".to_string()),
+            OscType::Float(envelope.decay),
+            OscType::String("sustain".to_string()),
+            OscType::Float(sustain_time),
+            OscType::String("release".to_string()),
+            OscType::Float(envelope.release),
+            OscType::String("sustain_level".to_string()),
+            OscType::Float(envelope.sustain), // sustain field = sustain_level
+        ];
+
+        // Forward synth-specific params (cutoff, res, detune, etc.)
+        for (name, val) in params {
+            args.push(OscType::String(name.clone()));
+            args.push(OscType::Float(*val));
+        }
+
+        self.send_osc_msg("/s_new", args)?;
         self.state.lock().is_playing = true;
         Ok(())
     }
@@ -353,6 +381,7 @@ impl ScEngine {
     ) -> Result<(), String> {
         let node_id = self.alloc_node_id();
         let master_vol = self.state.lock().master_volume;
+        let out_bus = self.current_out_bus();
 
         self.send_osc_msg(
             "/s_new",
@@ -361,6 +390,8 @@ impl ScEngine {
                 OscType::Int(node_id),
                 OscType::Int(ADD_TO_HEAD),
                 OscType::Int(SOURCE_GROUP),
+                OscType::String("out".to_string()),
+                OscType::Int(out_bus),
                 OscType::String("buf".to_string()),
                 OscType::Int(buffer_id),
                 OscType::String("amp".to_string()),
@@ -634,6 +665,95 @@ impl ScEngine {
 
     fn alloc_buffer_id(&self) -> i32 {
         self.next_buffer_id.fetch_add(1, Ordering::Relaxed)
+    }
+
+    /// Allocate a stereo private audio bus (returns the bus index).
+    fn alloc_audio_bus(&self) -> i32 {
+        // Each stereo bus pair occupies 2 channels
+        self.next_bus_id.fetch_add(2, Ordering::Relaxed)
+    }
+
+    /// Return the current output bus: top of the FX bus stack, or 0 (hardware out).
+    fn current_out_bus(&self) -> i32 {
+        let stack = self.fx_bus_stack.lock();
+        if let Some(&(bus_id, _, _)) = stack.last() {
+            bus_id
+        } else {
+            0 // hardware output
+        }
+    }
+
+    /// Push a new FX bus onto the stack.
+    ///
+    /// Allocates a private audio bus, creates an FX synth that reads from
+    /// that bus and writes to the *previous* output bus (or hardware 0).
+    /// Subsequent synths/samples will route their output to this new bus.
+    pub fn push_fx_bus(&self, fx_type: &str, params: &[(String, f32)]) -> Result<(), String> {
+        let new_bus = self.alloc_audio_bus();
+        let parent_bus = self.current_out_bus();
+
+        let fx_node_id = self.alloc_node_id();
+        let def_name = match fx_type {
+            "reverb" | "gverb" => "sonic_fx_reverb",
+            "echo" | "delay" => "sonic_fx_echo",
+            "distortion" | "tanh" => "sonic_fx_distortion",
+            "slicer" => "sonic_fx_slicer",
+            "lpf" | "rlpf" | "nrlpf" => "sonic_fx_lpf",
+            "hpf" | "rhpf" | "nrhpf" => "sonic_fx_hpf",
+            "flanger" => "sonic_fx_flanger",
+            "compressor" => "sonic_fx_compressor",
+            "bitcrusher" => "sonic_fx_bitcrusher",
+            "pan" => "sonic_fx_pan",
+            "wobble" => "sonic_fx_wobble",
+            "tremolo" => "sonic_fx_tremolo",
+            _ => {
+                eprintln!("[SC] Unknown FX type '{}', using reverb", fx_type);
+                "sonic_fx_reverb"
+            }
+        };
+
+        // FX synths use an insert-effect pattern:
+        //   in_bus = new_bus  (reads source audio from here)
+        //   out    = parent_bus (writes processed audio to parent)
+        // Placed at tail of FX_GROUP so they process audio after sources.
+        let mut args = vec![
+            OscType::String(def_name.to_string()),
+            OscType::Int(fx_node_id),
+            OscType::Int(ADD_TO_TAIL),
+            OscType::Int(FX_GROUP),
+            OscType::String("in_bus".to_string()),
+            OscType::Int(new_bus),
+            OscType::String("out".to_string()),
+            OscType::Int(parent_bus),
+        ];
+
+        for (name, val) in params {
+            args.push(OscType::String(name.clone()));
+            args.push(OscType::Float(*val));
+        }
+
+        self.send_osc_msg("/s_new", args)?;
+
+        eprintln!(
+            "[SC] Pushed FX bus: type={}, bus={}, parent_bus={}, node={}",
+            fx_type, new_bus, parent_bus, fx_node_id
+        );
+
+        self.fx_bus_stack.lock().push((new_bus, fx_node_id, 0));
+        Ok(())
+    }
+
+    /// Pop the top FX bus from the stack, freeing the FX synth node.
+    pub fn pop_fx_bus(&self) -> Result<(), String> {
+        let entry = self.fx_bus_stack.lock().pop();
+        if let Some((_bus_id, fx_node_id, _)) = entry {
+            // Free the FX synth node — it will stop processing
+            let _ = self.send_osc_msg("/n_free", vec![OscType::Int(fx_node_id)]);
+            eprintln!("[SC] Popped FX bus: node={}", fx_node_id);
+        } else {
+            eprintln!("[SC] Warning: pop_fx_bus called with empty stack");
+        }
+        Ok(())
     }
 
     /// Start the scsynth subprocess

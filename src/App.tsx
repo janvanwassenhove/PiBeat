@@ -16,7 +16,7 @@ import { useStore } from "./store";
 import "./App.css";
 
 const App: React.FC = () => {
-  const { fetchSamples, fetchStatus, showSampleBrowser, showSynthBrowser, showEffectsPanel, showHelp, showAgentChat, showCuePanel, viewMode } = useStore();
+  const { fetchSamples, fetchStatus, showSampleBrowser, showSynthBrowser, showEffectsPanel, showHelp, showAgentChat, showCuePanel, viewMode, theme, setTheme } = useStore();
 
   useEffect(() => {
     fetchSamples();
@@ -25,6 +25,15 @@ const App: React.FC = () => {
     }, 1000);
     return () => clearInterval(interval);
   }, [fetchSamples, fetchStatus]);
+
+  // Apply theme data attribute to root element
+  useEffect(() => {
+    if (theme === 'sonicpi') {
+      document.documentElement.setAttribute('data-theme', 'sonicpi');
+    } else {
+      document.documentElement.removeAttribute('data-theme');
+    }
+  }, [theme]);
 
   const hasSidePanel = showSampleBrowser || showSynthBrowser || showEffectsPanel || showHelp || showAgentChat || showCuePanel;
 
@@ -42,6 +51,22 @@ const App: React.FC = () => {
             <span className="logo-icon">&#9835;</span>
             <span className="logo-text">PiBeat</span>
           </div>
+        </div>
+        <div className="theme-switcher">
+          <button
+            className={`theme-option ${theme === 'pibeat' ? 'active' : ''}`}
+            onClick={() => setTheme('pibeat')}
+            title="PiBeat theme"
+          >
+            PiBeat
+          </button>
+          <button
+            className={`theme-option ${theme === 'sonicpi' ? 'active' : ''}`}
+            onClick={() => setTheme('sonicpi')}
+            title="Sonic Pi classic theme"
+          >
+            Sonic Pi
+          </button>
         </div>
         <Toolbar />
         <div className="titlebar-spacer" data-tauri-drag-region></div>

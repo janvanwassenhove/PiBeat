@@ -2,6 +2,8 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { LLMProvider, ModelId } from './llm';
 
+export type AppTheme = 'pibeat' | 'sonicpi';
+
 export interface LogEntry {
   timestamp: number;
   level: string;
@@ -92,6 +94,7 @@ interface AppStore {
   effects: EffectSettings;
   
   // UI state
+  theme: AppTheme;
   viewMode: 'code' | 'timeline';
   showSampleBrowser: boolean;
   showSynthBrowser: boolean;
@@ -135,6 +138,7 @@ interface AppStore {
   
   toggleViewMode: () => void;
   setViewMode: (mode: 'code' | 'timeline') => void;
+  setTheme: (theme: AppTheme) => void;
   toggleSampleBrowser: () => void;
   toggleSynthBrowser: () => void;
   toggleEffectsPanel: () => void;
@@ -231,6 +235,7 @@ export const useStore = create<AppStore>((set, get) => ({
     hpf_cutoff: 20,
   },
   viewMode: 'code',
+  theme: (localStorage.getItem('pibeat-theme') as AppTheme) || 'pibeat',
   showSampleBrowser: false,
   showSynthBrowser: false,
   showEffectsPanel: false,
@@ -419,6 +424,10 @@ export const useStore = create<AppStore>((set, get) => ({
 
   toggleViewMode: () => set((s) => ({ viewMode: s.viewMode === 'code' ? 'timeline' : 'code' })),
   setViewMode: (mode) => set({ viewMode: mode }),
+  setTheme: (theme) => {
+    localStorage.setItem('pibeat-theme', theme);
+    set({ theme });
+  },
   toggleSampleBrowser: () => set((s) => ({ showSampleBrowser: !s.showSampleBrowser })),
   toggleSynthBrowser: () => set((s) => ({ showSynthBrowser: !s.showSynthBrowser })),
   toggleEffectsPanel: () => set((s) => ({ showEffectsPanel: !s.showEffectsPanel })),

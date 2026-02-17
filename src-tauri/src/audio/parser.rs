@@ -13,6 +13,8 @@ pub enum ParsedCommand {
         duration: f32,
         pan: f32,
         envelope: Envelope,
+        /// Synth-specific parameters (cutoff, res, detune, depth, etc.)
+        params: Vec<(String, f32)>,
     },
     PlaySample {
         name: String,
@@ -1842,6 +1844,7 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
                         sustain: sustain_level,
                         release,
                     },
+                    params: extract_synth_params(line),
                 });
             }
 
@@ -1870,6 +1873,7 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
                     sustain: sustain_level,
                     release,
                 },
+                params: extract_synth_params(line),
             })
         }
         "play_pattern_timed" => parse_play_pattern_timed(line, ctx),
@@ -1979,6 +1983,7 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
                     sustain: sustain_level,
                     release,
                 },
+                params: extract_synth_params(line),
             })
         }
         "stop" => Some(ParsedCommand::Stop),
@@ -2176,6 +2181,7 @@ fn parse_play_chord(line: &str, ctx: &ParseContext) -> Option<ParsedCommand> {
             sustain: 0.7,
             release,
         },
+        params: extract_synth_params(line),
     })
 }
 
@@ -2209,7 +2215,7 @@ fn parse_play_pattern_timed(line: &str, ctx: &ParseContext) -> Option<ParsedComm
     let amplitude = extract_param(line, "amp").unwrap_or(0.5);
     let release = extract_param(line, "release").unwrap_or(0.3);
     let attack = extract_param(line, "attack").unwrap_or(0.01);
-    let _cutoff = extract_param(line, "cutoff");
+    let synth_params = extract_synth_params(line);
 
     // Extract the notes array and timing array
     let notes = extract_array(line, 0)?;
@@ -2248,6 +2254,7 @@ fn parse_play_pattern_timed(line: &str, ctx: &ParseContext) -> Option<ParsedComm
                     sustain: 0.7,
                     release,
                 },
+                params: synth_params.clone(),
             });
         }
         let sleep_dur = timing_vals
@@ -2267,6 +2274,7 @@ fn parse_play_pattern_timed(line: &str, ctx: &ParseContext) -> Option<ParsedComm
 fn parse_play_pattern(line: &str, ctx: &ParseContext) -> Option<ParsedCommand> {
     let amplitude = extract_param(line, "amp").unwrap_or(0.5);
     let release = extract_param(line, "release").unwrap_or(0.3);
+    let synth_params = extract_synth_params(line);
 
     let notes = extract_array(line, 0)?;
     let frequencies: Vec<f32> = notes
@@ -2288,6 +2296,7 @@ fn parse_play_pattern(line: &str, ctx: &ParseContext) -> Option<ParsedCommand> {
                 duration: release,
                 pan: 0.0,
                 envelope: Envelope::default(),
+                params: synth_params.clone(),
             });
         }
         sub_commands.push(ParsedCommand::Sleep(1.0));
@@ -2520,6 +2529,25 @@ fn extract_fx_params(line: &str) -> Vec<(String, f32)> {
     params
 }
 
+/// Extract synth-specific parameters from a play/synth line.
+/// These are forwarded to SuperCollider as named OSC args so the
+/// SynthDef can use them (cutoff, res, detune, wave, depth, divisor, etc.)
+fn extract_synth_params(line: &str) -> Vec<(String, f32)> {
+    let mut params = Vec::new();
+    let synth_param_names = [
+        "cutoff", "res", "detune", "depth", "divisor", "wave",
+        "pulse_width", "width", "sub_amp", "noise", "coef",
+        "mod_phase", "mod_range", "mod_pulse_width", "mod_phase_offset",
+        "mod_wave", "mod_invert_wave", "vel",
+    ];
+    for name in &synth_param_names {
+        if let Some(val) = extract_param(line, name) {
+            params.push((name.to_string(), val));
+        }
+    }
+    params
+}
+
 /// Convert parsed commands to audio commands with timing
 pub fn commands_to_audio(
     parsed: &[ParsedCommand],
@@ -2545,6 +2573,7 @@ pub fn commands_to_audio(
                 duration,
                 pan,
                 envelope,
+                params,
             } => {
                 if *frequency > 0.0 {
                     let total_dur = duration + envelope.attack + envelope.decay + envelope.release;
@@ -2557,6 +2586,7 @@ pub fn commands_to_audio(
                             duration_secs: total_dur,
                             envelope: *envelope,
                             pan: *pan,
+                            params: params.clone(),
                         },
                     ));
                 }
@@ -2594,6 +2624,18 @@ pub fn commands_to_audio(
                 params,
                 commands,
             } => {
+                // Emit FxStart — the SC engine will allocate a private audio bus,
+                // create the FX synth on it, and route subsequent synths through it.
+                // The cpal engine falls back to global SetEffect.
+                result.push((
+                    time_offset,
+                    AudioCommand::FxStart {
+                        fx_type: fx_type.clone(),
+                        params: params.clone(),
+                    },
+                ));
+
+                // Also emit SetEffect for the cpal engine path (fallback)
                 // Save FX state before block so we can restore it after (scoped FX)
                 let saved_reverb = current_reverb;
                 let saved_delay_time = current_delay_time;
@@ -2602,16 +2644,6 @@ pub fn commands_to_audio(
                 let saved_lpf = current_lpf;
                 let saved_hpf = current_hpf;
 
-                // Apply FX settings
-                for (name, val) in params {
-                    match name.as_str() {
-                        "mix" | "room" => current_reverb = *val,
-                        "time" => current_delay_time = *val,
-                        "feedback" => current_delay_feedback = *val,
-                        "cutoff" => current_lpf = *val,
-                        _ => {}
-                    }
-                }
                 match fx_type.as_str() {
                     "reverb" | "gverb" | "krush" => {
                         current_reverb = params.iter().find(|(n, _)| n == "mix").map(|(_, v)| *v).unwrap_or(0.5);
@@ -2628,13 +2660,6 @@ pub fn commands_to_audio(
                     }
                     "hpf" | "rhpf" | "nrhpf" => {
                         current_hpf = params.iter().find(|(n, _)| n == "cutoff").map(|(_, v)| *v).unwrap_or(500.0);
-                    }
-                    // Other FX: just apply as reverb or ignore gracefully
-                    "slicer" | "wobble" | "flanger" | "pan" | "panslicer"
-                    | "bitcrusher" | "compressor" | "whammy" | "octaver"
-                    | "vowel" | "normaliser" | "pitch_shift" | "ring_mod"
-                    | "band_eq" | "ixi_techno" | "tremolo" | "level" => {
-                        // Not directly supported yet, ignore gracefully
                     }
                     _ => {}
                 }
@@ -2661,6 +2686,9 @@ pub fn commands_to_audio(
                 let inner_duration = commands_to_duration(commands, current_bpm);
                 time_offset += inner_duration;
 
+                // Emit FxEnd — SC engine will free the FX synth and restore bus
+                result.push((time_offset, AudioCommand::FxEnd));
+
                 // Restore FX state after block (with_fx is scoped in Sonic Pi)
                 current_reverb = saved_reverb;
                 current_delay_time = saved_delay_time;
@@ -2669,7 +2697,7 @@ pub fn commands_to_audio(
                 current_lpf = saved_lpf;
                 current_hpf = saved_hpf;
 
-                // Emit a SetEffect to restore the previous FX state
+                // Emit a SetEffect to restore the previous FX state (cpal fallback)
                 result.push((
                     time_offset,
                     AudioCommand::SetEffect {

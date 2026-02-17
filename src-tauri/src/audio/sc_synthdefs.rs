@@ -65,97 +65,97 @@ var dir = "{dir}";
 // ============================================================
 
 // Beep / Sine
-SynthDef(\sonic_beep, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1|
+SynthDef(\sonic_beep, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1|
     var sig = SinOsc.ar(freq);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Saw
-SynthDef(\sonic_saw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, cutoff=100|
+SynthDef(\sonic_saw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, cutoff=100, res=0.3|
     var sig = Saw.ar(freq);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Square
-SynthDef(\sonic_square, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, cutoff=100|
+SynthDef(\sonic_square, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, cutoff=100, res=0.3|
     var sig = Pulse.ar(freq, 0.5);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Triangle
-SynthDef(\sonic_tri, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3|
+SynthDef(\sonic_tri, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1|
     var sig = LFTri.ar(freq);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Noise
-SynthDef(\sonic_noise, {{ |out=0, amp=0.5, pan=0, attack=0, sustain=0, release=1, cutoff=110, freq=0|
+SynthDef(\sonic_noise, {{ |out=0, amp=0.5, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, cutoff=110, freq=0|
     var sig = WhiteNoise.ar;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Pulse (variable width)
-SynthDef(\sonic_pulse, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, pulse_width=0.5, cutoff=100|
+SynthDef(\sonic_pulse, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, pulse_width=0.5, cutoff=100, res=0.3|
     var sig = Pulse.ar(freq, pulse_width);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Super Saw (7 detuned saws)
-SynthDef(\sonic_supersaw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, cutoff=130, res=0.7|
+SynthDef(\sonic_supersaw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, cutoff=130, res=0.7|
     var sigs = Array.fill(7, {{ |i|
         var dt = (i - 3) * 0.12;
         Saw.ar(freq * (1 + (dt * 0.01)));
     }});
     var sig = Mix.ar(sigs) / 3;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Detuned Saw
-SynthDef(\sonic_dsaw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, detune=0.1, cutoff=100|
+SynthDef(\sonic_dsaw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, detune=0.1, cutoff=100, res=0.3|
     var sig = Mix.ar([Saw.ar(freq), Saw.ar(freq * (1 + (detune * 0.01)))]) * 0.5;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Detuned Pulse
-SynthDef(\sonic_dpulse, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, detune=0.1, cutoff=100|
+SynthDef(\sonic_dpulse, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, detune=0.1, cutoff=100, res=0.3|
     var sig = Mix.ar([Pulse.ar(freq, 0.5), Pulse.ar(freq * (1 + (detune * 0.01)), 0.5)]) * 0.5;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Detuned Tri
-SynthDef(\sonic_dtri, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, detune=0.1|
+SynthDef(\sonic_dtri, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, detune=0.1|
     var sig = Mix.ar([LFTri.ar(freq), LFTri.ar(freq * (1 + (detune * 0.01)))]) * 0.5;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // FM Synthesis
-SynthDef(\sonic_fm, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, divisor=2, depth=1|
+SynthDef(\sonic_fm, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, divisor=2, depth=1|
     var modFreq = freq / divisor;
     var modulator = SinOsc.ar(modFreq) * depth * modFreq;
     var sig = SinOsc.ar(freq + modulator);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Mod FM
-SynthDef(\sonic_mod_fm, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_invert_wave=0, mod_wave=0, divisor=2, depth=1|
+SynthDef(\sonic_mod_fm, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_invert_wave=0, mod_wave=0, divisor=2, depth=1|
     var modFreq = freq / divisor;
     var lfo = Select.kr(mod_wave, [
         SinOsc.kr(mod_phase, mod_phase_offset),
@@ -166,12 +166,12 @@ SynthDef(\sonic_mod_fm, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustai
     lfo = lfo.linlin(-1, 1, freq, freq * mod_range);
     var modulator = SinOsc.ar(modFreq) * depth * modFreq;
     var sig = SinOsc.ar(lfo + modulator);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Mod Sine
-SynthDef(\sonic_mod_sine, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0|
+SynthDef(\sonic_mod_sine, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0|
     var lfo = Select.kr(mod_wave, [
         SinOsc.kr(mod_phase, mod_phase_offset),
         LFSaw.kr(mod_phase, mod_phase_offset),
@@ -180,12 +180,12 @@ SynthDef(\sonic_mod_sine, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sust
     ]);
     var modulated_freq = freq * (1 + (lfo * mod_range * 0.01));
     var sig = SinOsc.ar(modulated_freq);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Mod Saw
-SynthDef(\sonic_mod_saw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0, cutoff=100|
+SynthDef(\sonic_mod_saw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0, cutoff=100, res=0.3|
     var lfo = Select.kr(mod_wave, [
         SinOsc.kr(mod_phase, mod_phase_offset),
         LFSaw.kr(mod_phase, mod_phase_offset),
@@ -194,13 +194,13 @@ SynthDef(\sonic_mod_saw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, susta
     ]);
     var modulated_freq = freq * (1 + (lfo * mod_range * 0.01));
     var sig = Saw.ar(modulated_freq);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Mod DSaw
-SynthDef(\sonic_mod_dsaw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0, detune=0.1, cutoff=100|
+SynthDef(\sonic_mod_dsaw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0, detune=0.1, cutoff=100, res=0.3|
     var lfo = Select.kr(mod_wave, [
         SinOsc.kr(mod_phase, mod_phase_offset),
         LFSaw.kr(mod_phase, mod_phase_offset),
@@ -209,13 +209,13 @@ SynthDef(\sonic_mod_dsaw, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sust
     ]);
     var modulated_freq = freq * (1 + (lfo * mod_range * 0.01));
     var sig = Mix.ar([Saw.ar(modulated_freq), Saw.ar(modulated_freq * (1 + (detune * 0.01)))]) * 0.5;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Mod Tri
-SynthDef(\sonic_mod_tri, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0|
+SynthDef(\sonic_mod_tri, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0|
     var lfo = Select.kr(mod_wave, [
         SinOsc.kr(mod_phase, mod_phase_offset),
         LFSaw.kr(mod_phase, mod_phase_offset),
@@ -224,12 +224,12 @@ SynthDef(\sonic_mod_tri, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, susta
     ]);
     var modulated_freq = freq * (1 + (lfo * mod_range * 0.01));
     var sig = LFTri.ar(modulated_freq);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Mod Pulse
-SynthDef(\sonic_mod_pulse, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0, cutoff=100|
+SynthDef(\sonic_mod_pulse, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, mod_phase=1, mod_range=5, mod_pulse_width=0.5, mod_phase_offset=0, mod_wave=0, cutoff=100, res=0.3|
     var lfo = Select.kr(mod_wave, [
         SinOsc.kr(mod_phase, mod_phase_offset),
         LFSaw.kr(mod_phase, mod_phase_offset),
@@ -238,34 +238,34 @@ SynthDef(\sonic_mod_pulse, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sus
     ]);
     var modulated_freq = freq * (1 + (lfo * mod_range * 0.01));
     var sig = Pulse.ar(modulated_freq, mod_pulse_width);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // TB-303 (acid bass)
-SynthDef(\sonic_tb303, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, cutoff=100, res=0.8, wave=0|
+SynthDef(\sonic_tb303, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, cutoff=100, res=0.8, wave=0|
     var sig = Select.ar(wave, [Saw.ar(freq), Pulse.ar(freq, 0.5)]);
     var fenv = EnvGen.kr(Env.perc(0.001, release * 2), 1, cutoff.midicps * 2, cutoff.midicps * 0.5);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = RLPF.ar(sig, fenv.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Prophet (detuned saws + pulse)
-SynthDef(\sonic_prophet, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, cutoff=110, res=0.7|
+SynthDef(\sonic_prophet, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, cutoff=110, res=0.7|
     var sig = Mix.ar([
         Saw.ar(freq, 0.5),
         Pulse.ar(freq * 1.002, 0.4, 0.4),
         Pulse.ar(freq * 0.998, 0.6, 0.3)
     ]);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Zawa (phase modulation synth)
-SynthDef(\sonic_zawa, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, cutoff=100, res=0.9, phase=1, wave=3|
+SynthDef(\sonic_zawa, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, cutoff=100, res=0.9, phase=1, wave=3|
     var modulator = SinOsc.ar(freq * phase) * 2pi;
     var sig = Select.ar(wave, [
         SinOsc.ar(freq, modulator),
@@ -273,55 +273,55 @@ SynthDef(\sonic_zawa, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=
         Pulse.ar(freq, 0.5),
         LFTri.ar(freq)
     ]);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Blade (thick detuned saws)
-SynthDef(\sonic_blade, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, cutoff=100, res=0.5|
+SynthDef(\sonic_blade, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, cutoff=100, res=0.5|
     var sig = Mix.ar(Array.fill(8, {{ |i|
         var detune = (i - 3.5) * 0.007;
         Saw.ar(freq * (1 + detune));
     }})) / 4;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Tech Saws (5 layered saws)
-SynthDef(\sonic_tech_saws, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, cutoff=130, res=0.3|
+SynthDef(\sonic_tech_saws, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, cutoff=130, res=0.3|
     var sig = Mix.ar(Array.fill(5, {{ |i|
         Saw.ar(freq * (1 + (i * 0.01)));
     }})) / 3;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Hoover (classic rave synth)
-SynthDef(\sonic_hoover, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.05, sustain=0, release=1, cutoff=130|
+SynthDef(\sonic_hoover, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.05, decay=0, sustain=0, release=1, sustain_level=1, cutoff=130|
     var sig = Mix.ar([
         Saw.ar(freq, 0.3),
         Saw.ar(freq * 1.01, 0.3),
         Saw.ar(freq * 0.99, 0.3),
         Pulse.ar(freq * 0.5, 0.5, 0.2)
     ]);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.5);
     sig = FreeVerb.ar(sig, 0.3, 0.5, 0.5);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Pluck (Karplus-Strong)
-SynthDef(\sonic_pluck, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0, sustain=0, release=1, coef=0.3|
+SynthDef(\sonic_pluck, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, coef=0.3|
     var sig = Pluck.ar(WhiteNoise.ar, 1, 0.2, freq.reciprocal, release * 5, coef);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Piano (additive harmonics)
-SynthDef(\sonic_piano, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.5, vel=0.8|
+SynthDef(\sonic_piano, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.5, sustain_level=1, vel=0.8|
     var sig = Mix.ar(Array.fill(8, {{ |i|
         var partial = i + 1;
         SinOsc.ar(freq * partial, 0, 1.0 / (partial * partial));
@@ -332,7 +332,7 @@ SynthDef(\sonic_piano, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain
 }}).writeDefFile(dir);
 
 // Pretty Bell (inharmonic partials)
-SynthDef(\sonic_pretty_bell, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1.5|
+SynthDef(\sonic_pretty_bell, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1.5, sustain_level=1|
     var partials = [1, 2.4, 3.1, 4.7, 6.2];
     var sig = Mix.ar(partials.collect({{ |p|
         SinOsc.ar(freq * p, 0, 1.0 / p);
@@ -342,7 +342,7 @@ SynthDef(\sonic_pretty_bell, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, s
 }}).writeDefFile(dir);
 
 // Dull Bell
-SynthDef(\sonic_dull_bell, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1.5|
+SynthDef(\sonic_dull_bell, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1.5, sustain_level=1|
     var partials = [1, 2.0, 2.5, 3.2, 4.0];
     var sig = Mix.ar(partials.collect({{ |p|
         SinOsc.ar(freq * p, 0, 1.0 / (p * p));
@@ -353,95 +353,95 @@ SynthDef(\sonic_dull_bell, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sus
 }}).writeDefFile(dir);
 
 // Hollow (band-pass filtered)
-SynthDef(\sonic_hollow, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, cutoff=90, res=0.99|
+SynthDef(\sonic_hollow, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, cutoff=90, res=0.99|
     var sig = Mix.ar([SinOsc.ar(freq), PinkNoise.ar(0.3)]);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = BPF.ar(sig, freq, 1 - res.clip(0.01, 0.99));
     sig = sig * 4;
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Dark Ambience (atmospheric pad)
-SynthDef(\sonic_dark_ambience, {{ |out=0, freq=52, amp=0.5, pan=0, attack=0.01, sustain=0, release=1, cutoff=90, res=0.7, detune=12, noise=0, room=70, reverb_time=100|
+SynthDef(\sonic_dark_ambience, {{ |out=0, freq=52, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=1, sustain_level=1, cutoff=90, res=0.7, detune=12, noise=0, room=70, reverb_time=100|
     var sig = Mix.ar([
         Saw.ar(freq * (1 + (detune * 0.001)), 0.3),
         Saw.ar(freq * (1 - (detune * 0.001)), 0.3),
         SinOsc.ar(freq * 0.5, 0, 0.2),
         PinkNoise.ar(0.08 + (noise * 0.1))
     ]);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     sig = FreeVerb.ar(sig, 0.7, room / 100, 0.5);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Growl (ring modulated)
-SynthDef(\sonic_growl, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.1, sustain=0, release=1, cutoff=130|
+SynthDef(\sonic_growl, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.1, decay=0, sustain=0, release=1, sustain_level=1, cutoff=130|
     var mod = SinOsc.ar(freq * 0.5);
     var sig = SinOsc.ar(freq) * mod;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Chip Lead
-SynthDef(\sonic_chip_lead, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0, sustain=0, release=0.3, width=0|
+SynthDef(\sonic_chip_lead, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0, decay=0, sustain=0, release=0.3, sustain_level=1, width=0|
     var sig = Pulse.ar(freq, (width * 0.5) + 0.5);
     sig = sig.round(0.125);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Chip Bass
-SynthDef(\sonic_chip_bass, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0, sustain=0, release=0.3|
+SynthDef(\sonic_chip_bass, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0, decay=0, sustain=0, release=0.3, sustain_level=1|
     var sig = Pulse.ar(freq, 0.5) + Pulse.ar(freq * 0.5, 0.5);
     sig = sig.round(0.125) * 0.5;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Chip Noise
-SynthDef(\sonic_chip_noise, {{ |out=0, amp=0.5, pan=0, attack=0, sustain=0, release=0.3, freq=440|
+SynthDef(\sonic_chip_noise, {{ |out=0, amp=0.5, pan=0, attack=0, decay=0, sustain=0, release=0.3, sustain_level=1, freq=440|
     var sig = LFNoise0.ar(freq * 4);
     sig = sig.round(0.125);
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Brown Noise
-SynthDef(\sonic_bnoise, {{ |out=0, amp=0.5, pan=0, attack=0, sustain=0, release=1, freq=0|
+SynthDef(\sonic_bnoise, {{ |out=0, amp=0.5, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, freq=0|
     var sig = BrownNoise.ar;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Pink Noise
-SynthDef(\sonic_pnoise, {{ |out=0, amp=0.5, pan=0, attack=0, sustain=0, release=1, freq=0|
+SynthDef(\sonic_pnoise, {{ |out=0, amp=0.5, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, freq=0|
     var sig = PinkNoise.ar;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Grey Noise
-SynthDef(\sonic_gnoise, {{ |out=0, amp=0.5, pan=0, attack=0, sustain=0, release=1, freq=0|
+SynthDef(\sonic_gnoise, {{ |out=0, amp=0.5, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, freq=0|
     var sig = GrayNoise.ar;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Clip Noise
-SynthDef(\sonic_cnoise, {{ |out=0, amp=0.5, pan=0, attack=0, sustain=0, release=1, freq=0|
+SynthDef(\sonic_cnoise, {{ |out=0, amp=0.5, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, freq=0|
     var sig = ClipNoise.ar;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Sub Pulse
-SynthDef(\sonic_subpulse, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, sustain=0, release=0.3, cutoff=100|
+SynthDef(\sonic_subpulse, {{ |out=0, freq=440, amp=0.5, pan=0, attack=0.01, decay=0, sustain=0, release=0.3, sustain_level=1, cutoff=100, res=0.3|
     var sig = Pulse.ar(freq, 0.5) + SinOsc.ar(freq * 0.5, 0, 0.6);
     sig = sig * 0.5;
-    var env = EnvGen.kr(Env.linen(attack, sustain, release), doneAction: 2);
-    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), 0.3);
+    var env = EnvGen.kr(Env([0, 1, sustain_level, sustain_level, 0], [attack, decay, sustain, release], \lin), doneAction: 2);
+    sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
@@ -532,6 +532,43 @@ SynthDef(\sonic_fx_flanger, {{ |out=0, in_bus=0, phase=4, depth=5, feedback=0, d
 SynthDef(\sonic_fx_compressor, {{ |out=0, in_bus=0, threshold=0.2, clamp_time=0.01, slope_above=0.5, relax_time=0.01|
     var sig = In.ar(in_bus, 2);
     sig = Compander.ar(sig, sig, threshold, 1, slope_above, clamp_time, relax_time);
+    ReplaceOut.ar(out, sig);
+}}).writeDefFile(dir);
+
+// Bitcrusher (sample rate and bit depth reduction)
+SynthDef(\sonic_fx_bitcrusher, {{ |out=0, in_bus=0, bits=8, sample_rate=8000|
+    var sig = In.ar(in_bus, 2);
+    var crushed = sig.round(2.pow(1 - bits));
+    sig = Latch.ar(crushed, Impulse.ar(sample_rate));
+    ReplaceOut.ar(out, sig);
+}}).writeDefFile(dir);
+
+// Pan (stereo panning effect)
+SynthDef(\sonic_fx_pan, {{ |out=0, in_bus=0, pan=0|
+    var sig = In.ar(in_bus, 2);
+    var mono = Mix.ar(sig);
+    ReplaceOut.ar(out, Pan2.ar(mono, pan));
+}}).writeDefFile(dir);
+
+// Wobble (LFO-modulated filter)
+SynthDef(\sonic_fx_wobble, {{ |out=0, in_bus=0, phase=0.5, cutoff_min=60, cutoff_max=120, res=0.3|
+    var sig = In.ar(in_bus, 2);
+    var lfo = SinOsc.kr(phase.reciprocal).range(cutoff_min.midicps, cutoff_max.midicps);
+    sig = RLPF.ar(sig, lfo.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
+    ReplaceOut.ar(out, sig);
+}}).writeDefFile(dir);
+
+// Tremolo (amplitude modulation)
+SynthDef(\sonic_fx_tremolo, {{ |out=0, in_bus=0, phase=4, depth=0.5, wave=2|
+    var sig = In.ar(in_bus, 2);
+    var rate = phase.reciprocal;
+    var lfo = Select.kr(wave, [
+        SinOsc.kr(rate).range(1 - depth, 1),
+        LFSaw.kr(rate).range(1 - depth, 1),
+        LFTri.kr(rate).range(1 - depth, 1),
+        LFPulse.kr(rate).range(1 - depth, 1)
+    ]);
+    sig = sig * lfo;
     ReplaceOut.ar(out, sig);
 }}).writeDefFile(dir);
 

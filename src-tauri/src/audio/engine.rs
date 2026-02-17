@@ -18,6 +18,9 @@ pub enum AudioCommand {
         duration_secs: f32,
         envelope: Envelope,
         pan: f32,
+        /// Synth-specific parameters (cutoff, res, detune, depth, etc.)
+        /// forwarded to SuperCollider as named OSC args.
+        params: Vec<(String, f32)>,
     },
     PlaySample {
         samples: Vec<f32>,
@@ -37,6 +40,15 @@ pub enum AudioCommand {
         lpf_cutoff: f32,
         hpf_cutoff: f32,
     },
+    /// Start an FX block — allocates an audio bus and creates the FX synth.
+    /// All subsequent PlayNote/PlaySample commands route through this FX
+    /// until the matching FxEnd.
+    FxStart {
+        fx_type: String,
+        params: Vec<(String, f32)>,
+    },
+    /// End the current FX block — frees the FX synth, restores output bus.
+    FxEnd,
 }
 
 /// Shared audio state for waveform visualization
@@ -138,6 +150,7 @@ impl AudioEngine {
                                 duration_secs,
                                 envelope,
                                 pan,
+                                params: _, // Only used by SC engine
                             } => {
                                 let voice = SynthVoice::new(
                                     synth_type,
@@ -202,6 +215,8 @@ impl AudioEngine {
                                 effect_chain.set_lpf(lpf_cutoff);
                                 effect_chain.set_hpf(hpf_cutoff);
                             }
+                            // FxStart/FxEnd only used by SC engine; cpal ignores them
+                            AudioCommand::FxStart { .. } | AudioCommand::FxEnd => {}
                         }
                     }
 

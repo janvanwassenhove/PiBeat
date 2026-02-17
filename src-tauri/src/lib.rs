@@ -220,8 +220,10 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
         // All events go through the single scheduler thread for consistent timing
         enum ScEvent {
             PlaySample { buf_id: i32, amp: f32, rate: f32, pan: f32 },
-            PlayNote { synth_type: OscillatorType, freq: f32, amp: f32, dur: f32, env: Envelope, pan: f32 },
+            PlayNote { synth_type: OscillatorType, freq: f32, amp: f32, dur: f32, env: Envelope, pan: f32, params: Vec<(String, f32)> },
             SetEffect { rm: f32, dt: f32, df: f32, dist: f32, lpf: f32, hpf: f32 },
+            FxStart { fx_type: String, params: Vec<(String, f32)> },
+            FxEnd,
             SetBpm(f32),
             SetVolume(f32),
             Stop,
@@ -263,7 +265,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                         }
                     }
                 }
-                AudioCommand::PlayNote { synth_type, frequency, amplitude, duration_secs, envelope, pan } => {
+                AudioCommand::PlayNote { synth_type, frequency, amplitude, duration_secs, envelope, pan, ref params } => {
                     all_events.push((*time_offset, ScEvent::PlayNote {
                         synth_type: *synth_type,
                         freq: *frequency,
@@ -271,6 +273,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                         dur: *duration_secs,
                         env: *envelope,
                         pan: *pan,
+                        params: params.clone(),
                     }));
                     scheduled_count += 1;
                 }
@@ -291,6 +294,17 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                 }
                 AudioCommand::SetMasterVolume(vol) => {
                     all_events.push((*time_offset, ScEvent::SetVolume(*vol)));
+                    scheduled_count += 1;
+                }
+                AudioCommand::FxStart { ref fx_type, ref params } => {
+                    all_events.push((*time_offset, ScEvent::FxStart {
+                        fx_type: fx_type.clone(),
+                        params: params.clone(),
+                    }));
+                    scheduled_count += 1;
+                }
+                AudioCommand::FxEnd => {
+                    all_events.push((*time_offset, ScEvent::FxEnd));
                     scheduled_count += 1;
                 }
                 AudioCommand::Stop => {
@@ -359,8 +373,8 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                                     eprintln!("[SC scheduler] sample play failed: {}", e);
                                 }
                             }
-                            ScEvent::PlayNote { synth_type, freq, amp, dur, env, pan } => {
-                                if let Err(e) = sc.play_note(synth_type, freq, amp, dur, &env, pan) {
+                            ScEvent::PlayNote { synth_type, freq, amp, dur, env, pan, ref params } => {
+                                if let Err(e) = sc.play_note(synth_type, freq, amp, dur, &env, pan, params) {
                                     eprintln!("[SC scheduler] note play failed: {}", e);
                                 }
                             }
@@ -372,6 +386,16 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                             }
                             ScEvent::SetVolume(vol) => {
                                 sc.state.lock().master_volume = vol;
+                            }
+                            ScEvent::FxStart { ref fx_type, ref params } => {
+                                if let Err(e) = sc.push_fx_bus(fx_type, params) {
+                                    eprintln!("[SC scheduler] FxStart failed: {}", e);
+                                }
+                            }
+                            ScEvent::FxEnd => {
+                                if let Err(e) = sc.pop_fx_bus() {
+                                    eprintln!("[SC scheduler] FxEnd failed: {}", e);
+                                }
                             }
                             ScEvent::Stop => {
                                 let _ = sc.stop_all();
@@ -933,6 +957,7 @@ fn preview_synth(synth_name: String, state: tauri::State<Arc<AppState>>) -> Resu
         duration_secs: 0.6,
         envelope,
         pan: 0.0,
+        params: vec![],
     })?;
     Ok(format!("Previewing synth: {}", synth_name))
 }
