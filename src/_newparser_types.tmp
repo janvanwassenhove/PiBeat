@@ -1,0 +1,40 @@
+﻿  startBeat: number;
+  durationBeats: number;
+  code: string;
+  type: 'sample' | 'synth' | 'mixed';
+  color: string;
+  amp: number;
+  effects: ClipEffect[];
+  isLooping: boolean;
+  loopCount: number;
+  samples: string[];
+  /** Source line range in the original code (0-based) */
+  srcLineStart: number;
+  srcLineEnd: number;
+  /** The buffer this clip came from */
+  bufferId: number;
+}
+
+export interface TimelineTrack {
+  id: string;
+  name: string;
+  clips: TimelineClip[];
+  muted: boolean;
+  solo: boolean;
+  amp: number;
+  effects: ClipEffect[];
+  color: string;
+  section?: string;
+}
+
+export interface SectionMarker {
+  label: string;
+  beatStart: number;
+}
+
+export interface TimelineData {
+  tracks: TimelineTrack[];
+  bpm: number;
+  totalBeats: number;
+  sections: SectionMarker[];
+}

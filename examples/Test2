@@ -1,0 +1,110 @@
+use_bpm 120
+use_synth :dsaw
+
+# DARK METAL GUITAR PARTS
+define :guitar_riff do
+  with_fx :distortion, distort: 0.8 do
+    4.times do
+      play_pattern_timed [:E2, :G2, :A2, :E2, :G2, :B2, :E3, :D3], [0.5, 0.5, 0.25, 0.25, 0.5, 0.5, 0.25, 0.25], release: 0.3
+    end
+  end
+end
+
+define :verse_riff do
+  with_fx :distortion, distort: 0.7 do
+    4.times do
+      play_pattern_timed [:E2, :E2, :G2, :E2, :A2, :E2], [0.25, 0.25, 0.5, 0.25, 0.5, 0.5], release: 0.3
+    end
+  end
+end
+
+define :chorus_riff do
+  with_fx :distortion, distort: 0.9 do
+    4.times do
+      play_pattern_timed [:E3, :B2, :D3, :A2, :G2, :E2], [0.5, 0.5, 0.5, 0.5, 0.5, 1], release: 0.5
+    end
+  end
+end
+
+define :bridge_riff do
+  with_fx :reverb, room: 1 do
+    with_fx :distortion, distort: 0.6 do
+      2.times do
+        play_pattern_timed [:E3, :D3, :A2, :G2, :F2, :E2], [0.75, 0.75, 0.5, 0.5, 0.5, 1], release: 0.7
+      end
+    end
+  end
+end
+
+# HEAVY DRUMS
+define :dark_drums do
+  live_loop :drums do
+    sample :bd_haus, amp: 3
+    sleep 0.5
+    sample :sn_dolf, amp: 2
+    sleep 0.5
+    sample :drum_cymbal_hard, sustain: 0.2, amp: 2 if one_in(3)
+  end
+end
+
+# DARK BASSLINE
+define :dark_bass do
+  live_loop :bass do
+    use_synth :fm
+    play :E1, release: 0.5, amp: 2
+    sleep 0.5
+    play :D1, release: 0.5, amp: 2
+    sleep 0.5
+  end
+end
+
+# STRUCTURE
+
+# INTRO - Guitar Only (20s)
+in_thread do
+  10.times do
+    guitar_riff
+  end
+end
+sleep 20
+
+# Start Drums & Bass
+dark_drums
+dark_bass
+
+# VERSE 1 - Heavy Guitar
+4.times do
+  verse_riff
+end
+
+# CHORUS 1 - Open Power Chords
+4.times do
+  chorus_riff
+end
+
+# VERSE 2 - Heavy Guitar Returns
+4.times do
+  verse_riff
+end
+
+# CHORUS 2 - Open Power Chords
+4.times do
+  chorus_riff
+end
+
+# BRIDGE - Dark & Atmospheric
+2.times do
+  bridge_riff
+end
+
+# FINAL VERSE - Heavy Guitar One Last Time
+4.times do
+  verse_riff
+end
+
+# FINAL CHORUS - Big Ending
+4.times do
+  chorus_riff
+end
+
+

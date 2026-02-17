@@ -1,0 +1,94 @@
+use_bpm 135
+
+stop_time = 220  # 3 minutes and 30 seconds
+start_time = Time.now.to_f  # Record the start time
+
+def should_stop?(start_time, stop_time)
+  Time.now.to_f - start_time > stop_time
+end
+
+# Techno Song Structure: Building Intro, Multiple Build-ups, Drops, Breakdowns, Outro
+live_loop :intro_riff do
+  stop if should_stop?(start_time, stop_time)
+  use_synth :dark_ambience
+  with_fx :reverb, room: 0.7 do
+    with_fx :slicer, phase: 0.25 do
+      play_pattern_timed [:c3, :e3, :g3, :b3, :g3, :e3, :c3], [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 1],
+        release: 0.5, cutoff: 90, amp: 3
+    end
+  end
+end
+
+sleep 16  # Intro duration
+
+# Crossfade by reducing intro riff volume while increasing main elements
+live_loop :crossfade do
+  stop if should_stop?(start_time, stop_time)
+  8.times do |i|
+    control get(:intro_riff), amp: 3 - (i * 0.25)
+    sleep 2
+  end
+  stop
+end
+
+# Kick Drum
+live_loop :kick do
+  stop if should_stop?(start_time, stop_time)
+  sample :bd_haus, amp: 2
+  sleep 1
+end
+
+# Rolling Bassline
+live_loop :bass, sync: :kick do
+  stop if should_stop?(start_time, stop_time)
+  use_synth :tb303
+  notes = [:c2, :c2, :c2, :c3]
+  with_fx :distortion, distort: 0.3 do
+    with_fx :reverb, room: 0.3 do
+      notes.each do |n|
+        play n, release: 0.2, cutoff: 100, amp: 0.5
+        sleep 0.5
+      end
+    end
+  end
+end
+
+# Replace Hypnotic Synth with Sample
+live_loop :synth_sample, sync: :kick do
+  stop if should_stop?(start_time, stop_time)
+  sample "C:/Development/Workspaces/MusicAgent/Samples/Synth/Oberheim OB-8 BASS Incredible - C.wav", amp: 2, rate: 1
+  sleep 16.67  # Duration of the sample
+  sample "C:/Development/Workspaces/MusicAgent/Samples/Pack-2/orchestral-flow.mp3", amp: 2, rate: 1
+  sleep 14
+end
+
+# Build-up and Drop Sequences
+[48, 96, 144, 192, 240].each do |start_time_offset|
+  in_thread do
+    sleep start_time_offset
+    8.times do |i|
+      sample :bd_ada, amp: 1.5 + (i * 0.2)  # Gradually increasing volume
+      sleep 0.5
+    end
+  end
+  
+  in_thread do
+    sleep start_time_offset + 16
+    16.times do |i|
+      sample :bd_haus, amp: 2.5 + (i * 0.3)  # Increasing volume leading to drop
+      sleep 1
+    end
+  end
+  
+  in_thread do
+    sleep start_time_offset + 32
+    6.times do
+      sample :bd_haus, amp: 5  # Strong hit before breakdown
+      sleep 1
+    end
+    sample "C:/Development/Workspaces/MusicAgent/Samples/Synth/Tell Me 135 BPM C Min Juno-60 Bass.wav", amp: 4 , rate: 1
+    sleep 28.44
+    sample "C:/Development/Workspaces/MusicAgent/Samples/Synth/Memorymoog PAD Angel High - C.wav", amp: 3, rate: 1
+  end
+end
+

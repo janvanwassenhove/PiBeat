@@ -1,0 +1,321 @@
+#version 2 1:27
+use_bpm 123
+use_synth :fm
+sample_path = "C:/Development/Workspaces/MusicAgent/Samples/African Vocals Sung/"
+
+## ---- INTRO (8 sec) ---- ##
+live_loop :intro_perc do
+  8.times do
+    sample :perc_snap, amp: 0.5
+    sleep 0.5
+  end
+  stop
+end
+
+live_loop :intro_bass do
+  with_fx :lpf, cutoff: 50 do
+    8.times do
+      play_pattern_timed [:e2, :g2, :b2, :d3], [0.5, 0.5, 1, 0.5], release: 0.3, amp: 0.5
+    end
+  end
+  stop
+end
+
+sleep 8  # Wait for intro to finish
+
+## ---- VERSE 1 (16 sec) ---- ##
+live_loop :drums do
+  16.times do
+    sample :bd_haus, amp: 2
+    sleep 1
+    sample :sn_dub, amp: 1.5
+    sleep 1
+  end
+end
+
+live_loop :shaker do
+  16.times do
+    sample :perc_snap, rate: 2, amp: 0.7
+    sleep 0.5
+  end
+end
+
+live_loop :verse_bass do
+  16.times do
+    play_pattern_timed [:e2, :g2, :b2, :d3], [0.5, 0.5, 1, 0.5], release: 0.3, cutoff: 90, amp: 1
+  end
+end
+
+live_loop :vocals do
+  sleep 2
+  6.times do  # Shorter loop
+    sample sample_path + "african-vocals-gubulah-high.wav", amp: 1.5
+    sleep 5.6
+  end
+  sleep 15  # Extra pause to avoid over-repetition
+  6.times do  # Shorter loop
+    sample sample_path + "african-vocals-gubulah-high.wav", amp: 1.5
+    sleep 5.6
+  end
+  sleep 12
+  stop
+end
+
+sleep 16  # Wait for verse 1 to finish
+
+## ---- CHORUS 1 (16 sec) ---- ##
+live_loop :chorus_chords do
+  16.times do
+    play chord(:e3, :minor7), release: 1, amp: 1
+    sleep 2
+    play chord(:d3, :minor7), release: 1, amp: 1
+    sleep 2
+  end
+  stop
+end
+
+sleep 16  # Wait for chorus to finish
+
+live_loop :chorus_vocals do
+  4.times do  # Shorter loop
+    sample sample_path + "chorus-hetum-yoyo.wav", amp: 1.7
+    sleep 2
+  end
+  sleep 8  # Extra pause
+  stop
+end
+
+## ---- VERSE 2 (16 sec) ---- ##
+live_loop :verse2_bass do
+  16.times do
+    play_pattern_timed [:e2, :g2, :b2, :d3, :e2, :g2, :c3, :d3], [0.5, 0.5, 1, 0.5, 0.5, 0.5, 1, 0.5], release: 0.3, cutoff: 100, amp: 1
+  end
+  stop
+end
+
+sleep 16  # Wait for verse 2 to finish
+
+## ---- BUILDUP (8 sec) ---- ##
+live_loop :buildup do
+  with_fx :echo, phase: 0.25 do
+    8.times do
+      sample :drum_snare_soft, amp: 2
+      sleep 0.5
+    end
+  end
+  sleep 6
+  4.times do
+    sample sample_path + "african-vocals-gubulah-high.wav", amp: 1.5
+    sleep 7.6
+  end
+  stop
+end
+
+live_loop :chorus_vocals do
+  4.times do  # Shorter loop
+    sample sample_path + "chorus-hetum-yoyo.wav", amp: 1.7
+    sleep 2
+  end
+  sleep 8  # Extra pause
+  stop
+end
+
+sleep 8  # Wait for buildup to finish
+
+## ---- DROP 1 (16 sec, @1:00 min) ---- ##
+live_loop :drop_perc do
+  16.times do
+    sample :bd_haus, amp: 2
+    sample :perc_snap, amp: 1.5
+    sleep 1
+  end
+  stop
+end
+
+sleep 16  # Wait for drop 1 to finish
+live_loop :drums do
+  16.times do
+    sample :bd_haus, amp: 2
+    sleep 1
+    sample :sn_dub, amp: 1.5
+    sleep 1
+  end
+  stop
+end
+
+live_loop :shaker do
+  16.times do
+    sample :perc_snap, rate: 2, amp: 0.7
+    sleep 0.5
+  end
+  stop
+end
+
+live_loop :verse_bass do
+  16.times do
+    play_pattern_timed [:e2, :g2, :b2, :d3], [0.5, 0.5, 1, 0.5], release: 0.3, cutoff: 90, amp: 1
+  end
+  stop
+end
+
+## ---- BREAK (16 sec, @2:00 min) ---- ##
+live_loop :breakdown do
+  sample sample_path + "african-vocals-weeh-oh-mid.wav", amp: 1.5
+  sleep 2.73
+  sample sample_path + "zap-mama-style-3.wav", amp: 1.2
+  sleep 3
+  stop
+end
+
+sleep 16  # Wait for break to finish
+
+## ---- RESUMPTION (16 sec) ---- ##
+live_loop :resumption do
+  16.times do
+    play_pattern_timed [:e2, :g2, :b2, :d3], [0.5, 0.5, 1, 0.5], release: 0.3, cutoff: 90, amp: 1
+  end
+  stop
+end
+
+live_loop :drop_perc do
+  16.times do
+    sample :bd_haus, amp: 2
+    sample :perc_snap, amp: 1.5
+    sleep 1
+  end
+  stop
+end
+
+sleep 32  # Resume groove
+
+## ---- FINAL DROP (16 sec, @3:00 min) ---- ##
+live_loop :final_drop do
+  sample sample_path + "zap-mama-style-5.wav", amp: 1.5
+  8.times do
+    sample sample_path + "chorus-hi-ya-heh.wav", amp: 1.7
+    sleep 5.44
+    sample sample_path + "african-vocals-gubulah-low.wav", amp: 1.3  # Adding variation
+    sleep 2.5
+  end
+  stop
+end
+
+sleep 32  # Wait for final drop to finish
+
+## ---- OUTRO (8 sec) ---- ##
+live_loop :outro do
+  sample sample_path + "african-vocals-gubulah-mid.wav", amp: 1.2
+  sleep 4.38
+  stop
+end
+
+sleep 8  # Wait for outro to finish
+live_loop :buildup do
+  with_fx :echo, phase: 0.25 do
+    8.times do
+      sample :drum_snare_soft, amp: 2
+      sleep 0.5
+    end
+  end
+  sleep 12
+  4.times do
+    sample sample_path + "african-vocals-gubulah-high.wav", amp: 1.5
+    sleep 6.6
+  end
+  stop
+end
+
+live_loop :chorus_vocals do
+  4.times do  # Shorter loop
+    sample sample_path + "chorus-hetum-yoyo.wav", amp: 1.7
+    sleep 3
+    sample sample_path + "chorus-hi-ya-heh.wav", amp: 1.7
+    sleep 3.62
+  end
+  sleep 8  # Extra pause
+  stop
+end
+live_loop :drop_perc do
+  16.times do
+    sample :bd_haus, amp: 2
+    sample :perc_snap, amp: 1.5
+    sleep 1
+  end
+  stop
+end
+
+sleep 12
+
+## ---- reprise VERSE 1 (16 sec) ---- ##
+live_loop :drums do
+  16.times do
+    sample :bd_haus, amp: 2
+    sleep 1
+    sample :sn_dub, amp: 1.5
+    sleep 1
+  end
+end
+
+live_loop :shaker do
+  16.times do
+    sample :perc_snap, rate: 2, amp: 0.7
+    sleep 0.5
+  end
+end
+
+live_loop :verse_bass do
+  16.times do
+    play_pattern_timed [:e2, :g2, :b2, :d3], [0.5, 0.5, 1, 0.5], release: 0.3, cutoff: 90, amp: 1
+  end
+  stop
+end
+
+live_loop :vocals do
+  sleep 2
+  6.times do  # Shorter loop
+    sample sample_path + "african-vocals-gubulah-high.wav", amp: 1.5
+    sleep 6.6
+  end
+  sleep 20  # Extra pause to avoid over-repetition
+  6.times do  # Shorter loop
+    sample sample_path + "african-vocals-gubulah-high.wav", amp: 1.5
+    sleep 6.6
+  end
+  sleep 12
+  stop
+end
+
+sleep 22  # Wait for outro to finish
+live_loop :buildup do
+  with_fx :echo, phase: 0.25 do
+    8.times do
+      sample :drum_snare_soft, amp: 2
+      sleep 0.5
+    end
+  end
+  sleep 12
+  4.times do
+    sample sample_path + "african-vocals-gubulah-high.wav", amp: 1.5
+    sleep 4.6
+  end
+  stop
+end
+
+live_loop :chorus_vocals do
+  4.times do  # Shorter loop
+    sample sample_path + "chorus-hetum-yoyo.wav", amp: 1.7
+    sleep 2
+    sample sample_path + "chorus-hi-ya-heh.wav", amp: 1.7
+    sleep 2.62
+  end
+  sleep 8  # Extra pause
+  stop
+end
+live_loop :drop_perc do
+  16.times do
+    sample :bd_haus, amp: 2
+    sample :perc_snap, amp: 1.5
+    sleep 1
+  end
+  stop
+end
