@@ -370,13 +370,37 @@ function detectIntent(message: string): Intent {
 export async function processAgentMessage(
   userMessage: string,
   currentCode: string,
-  _history: AgentMessage[]
+  _history: AgentMessage[],
+  userSamples?: Array<{
+    name: string;
+    path: string;
+    audio_type: string;
+    feeling: string;
+    duration_secs: number;
+    bpm_estimate: number | null;
+    tags: string[];
+  }>
 ): Promise<AgentMessage> {
   // Small delay to feel reactive
   await new Promise(r => setTimeout(r, 300 + Math.random() * 400));
 
   const intent = detectIntent(userMessage);
   const analysis = analyzeCode(currentCode);
+  
+  // Check if user is asking about their samples
+  const isUserSampleQuery = /my sample|user sample|local sample|imported sample|my audio|my files/i.test(userMessage);
+  
+  if (isUserSampleQuery && userSamples && userSamples.length > 0) {
+    return buildUserSampleResponse(userMessage, userSamples);
+  }
+  
+  // If user wants to use their samples in a composition, suggest them
+  if (intent === 'generate_beat' || intent === 'generate_full') {
+    const drumSamples = userSamples?.filter(s => s.audio_type === 'drums') || [];
+    if (drumSamples.length > 0 && /my|user|local|own|imported/i.test(userMessage)) {
+      return buildCompositionWithUserSamples(intent, userMessage, drumSamples, userSamples || []);
+    }
+  }
 
   switch (intent) {
     case 'generate_beat': {
@@ -732,6 +756,142 @@ function handleGeneralQuestion(message: string, analysis: CodeAnalysis, currentC
     '• Generate a beat, melody, or full track\n' +
     '• Refactor or explain your current code\n' +
     '• List available synths, samples, or effects\n' +
-    '• Help with Sonic Pi syntax (loops, chords, scales...)\n\n' +
+    '• Help with Sonic Pi syntax (loops, chords, scales...)\n' +
+    '• Browse your imported samples ("show my samples")\n\n' +
     'Just type what you need!';
+}
+
+// ──────────────────────────────────────────────
+// User Sample Integration
+// ──────────────────────────────────────────────
+
+interface UserSampleRef {
+  name: string;
+  path: string;
+  audio_type: string;
+  feeling: string;
+  duration_secs: number;
+  bpm_estimate: number | null;
+  tags: string[];
+}
+
+function buildUserSampleResponse(userMessage: string, userSamples: UserSampleRef[]): AgentMessage {
+  const m = userMessage.toLowerCase();
+  
+  // Filter by type if user mentions a specific type
+  let filtered = userSamples;
+  let filterLabel = '';
+  
+  if (/drum|kick|snare|hihat|percussion/i.test(m)) {
+    filtered = userSamples.filter(s => s.audio_type === 'drums');
+    filterLabel = 'drum/percussion';
+  } else if (/vocal|voice|sing/i.test(m)) {
+    filtered = userSamples.filter(s => s.audio_type === 'vocal');
+    filterLabel = 'vocal';
+  } else if (/bass/i.test(m)) {
+    filtered = userSamples.filter(s => s.audio_type === 'bass');
+    filterLabel = 'bass';
+  } else if (/pad|ambient/i.test(m)) {
+    filtered = userSamples.filter(s => s.audio_type === 'pad');
+    filterLabel = 'pad/ambient';
+  } else if (/fx|effect|sfx/i.test(m)) {
+    filtered = userSamples.filter(s => s.audio_type === 'fx');
+    filterLabel = 'FX';
+  } else if (/loop/i.test(m)) {
+    filtered = userSamples.filter(s => s.audio_type === 'loop');
+    filterLabel = 'loop';
+  }
+  
+  if (filtered.length === 0) {
+    return {
+      role: 'assistant',
+      content: filterLabel
+        ? `I couldn't find any ${filterLabel} samples in your library. You have ${userSamples.length} samples total. Try browsing them in the My Samples panel.`
+        : `Your sample library is empty. Select a folder using the My Samples panel (folder icon in the toolbar).`,
+    };
+  }
+  
+  // Build summary
+  const typeCounts: Record<string, number> = {};
+  for (const s of (filterLabel ? filtered : userSamples)) {
+    typeCounts[s.audio_type] = (typeCounts[s.audio_type] || 0) + 1;
+  }
+  
+  let response = filterLabel
+    ? `Found **${filtered.length} ${filterLabel}** samples in your library:\n\n`
+    : `Your sample library has **${userSamples.length}** samples:\n\n`;
+  
+  if (!filterLabel) {
+    response += Object.entries(typeCounts)
+      .sort(([, a], [, b]) => b - a)
+      .map(([type, count]) => `• **${type}**: ${count}`)
+      .join('\n');
+    response += '\n\n';
+  }
+  
+  // Show top samples
+  const samplesToShow = filtered.slice(0, 8);
+  response += '**Sample highlights:**\n';
+  for (const s of samplesToShow) {
+    const bpm = s.bpm_estimate ? ` (~${Math.round(s.bpm_estimate)} BPM)` : '';
+    const dur = s.duration_secs < 1 ? `${Math.round(s.duration_secs * 1000)}ms` : `${s.duration_secs.toFixed(1)}s`;
+    response += `• \`${s.name}\` — ${s.audio_type}, ${s.feeling}, ${dur}${bpm}\n`;
+  }
+  
+  if (filtered.length > 8) {
+    response += `\n_...and ${filtered.length - 8} more._\n`;
+  }
+  
+  response += '\nTo use a sample in your code:\n```ruby\nsample "' + samplesToShow[0].path.replace(/\\/g, '/') + '"\n```';
+  
+  return { role: 'assistant', content: response };
+}
+
+function buildCompositionWithUserSamples(
+  intent: string,
+  _userMessage: string,
+  drumSamples: UserSampleRef[],
+  allSamples: UserSampleRef[]
+): AgentMessage {
+  const escapePath = (p: string) => p.replace(/\\/g, '/');
+  
+  // Pick best drum samples
+  const kick = drumSamples.find(s => /kick|bd_|bassdrum/i.test(s.name));
+  const snare = drumSamples.find(s => /snare|sd_|clap/i.test(s.name));
+  const hihat = drumSamples.find(s => /hihat|hh_|hat/i.test(s.name));
+  
+  const kickLine = kick ? `sample "${escapePath(kick.path)}"` : 'sample :kick';
+  const snareLine = snare ? `sample "${escapePath(snare.path)}"` : 'sample :snare';
+  const hihatLine = hihat ? `sample "${escapePath(hihat.path)}", amp: 0.6` : 'sample :hihat, amp: 0.6';
+  
+  let code = `live_loop :drums do\n  ${kickLine}\n  sleep 0.5\n  ${hihatLine}\n  sleep 0.25\n  ${hihatLine}\n  sleep 0.25\n  ${snareLine}\n  sleep 0.5\n  ${hihatLine}\n  sleep 0.25\n  ${hihatLine}\n  sleep 0.25\nend`;
+  
+  if (intent === 'generate_full') {
+    // Add bass from user samples if available
+    const bassSample = allSamples.find(s => s.audio_type === 'bass');
+    const padSample = allSamples.find(s => s.audio_type === 'pad');
+    
+    code += '\n\n';
+    if (bassSample) {
+      code += `live_loop :bass do\n  sample "${escapePath(bassSample.path)}", amp: 0.7\n  sleep 2\nend\n\n`;
+    } else {
+      code += `live_loop :bass do\n  use_synth :tb303\n  play :c2, cutoff: 80, release: 0.3\n  sleep 0.5\nend\n\n`;
+    }
+    
+    if (padSample) {
+      code += `live_loop :pad do\n  sample "${escapePath(padSample.path)}", amp: 0.3\n  sleep 4\nend`;
+    } else {
+      code += `live_loop :pad do\n  use_synth :blade\n  with_fx :reverb, mix: 0.6 do\n    play chord(:c4, :minor7), amp: 0.2, attack: 1, sustain: 2, release: 1\n  end\n  sleep 4\nend`;
+    }
+  }
+  
+  const usedSamples = [kick, snare, hihat].filter(Boolean).map(s => s!.name);
+  const desc = usedSamples.length > 0
+    ? `Using your samples: ${usedSamples.join(', ')}`
+    : 'Using built-in samples (no matching drum samples found in your library)';
+  
+  return {
+    role: 'assistant',
+    content: `Here's a ${intent === 'generate_full' ? 'full track' : 'beat'} using your samples:\n\n${desc}\n\n\`\`\`ruby\n${code}\n\`\`\`\n\nYou can preview any sample in the My Samples panel before using it.`,
+  };
 }

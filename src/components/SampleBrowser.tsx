@@ -4,10 +4,19 @@ import { FaPlay, FaTimes, FaFolder, FaChevronRight, FaChevronDown } from 'react-
 
 const SampleBrowser: React.FC = () => {
   const { samples, fetchSamples, playSampleFile, showSampleBrowser, toggleSampleBrowser, updateBufferCode, buffers, activeBufferId } = useStore();
+  const [filter, setFilter] = useState('');
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
 
-  // Group samples by category
-  const grouped = samples.reduce((acc, s) => {
+  // Filter and group samples by category
+  const filtered = filter
+    ? samples.filter(
+        (s) =>
+          s.name.toLowerCase().includes(filter.toLowerCase()) ||
+          s.category.toLowerCase().includes(filter.toLowerCase())
+      )
+    : samples;
+
+  const grouped = filtered.reduce((acc, s) => {
     if (!acc[s.category]) acc[s.category] = [];
     acc[s.category].push(s);
     return acc;
@@ -50,10 +59,25 @@ const SampleBrowser: React.FC = () => {
         </button>
       </div>
       <div className="panel-content">
+        <div className="synth-filter">
+          <input
+            type="text"
+            placeholder="Filter samples..."
+            value={filter}
+            onChange={(e) => setFilter(e.target.value)}
+            className="synth-filter-input"
+          />
+        </div>
         {Object.keys(grouped).length === 0 && (
           <div className="empty-state">
-            <p>No samples found.</p>
-            <p className="hint">Samples will be generated on first run.</p>
+            {samples.length === 0 ? (
+              <>
+                <p>No samples found.</p>
+                <p className="hint">Samples will be generated on first run.</p>
+              </>
+            ) : (
+              <p>No samples match your filter.</p>
+            )}
           </div>
         )}
         {Object.entries(grouped).map(([category, items]) => (

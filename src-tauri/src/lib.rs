@@ -16,6 +16,14 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 
+// Windows high-resolution timer (1ms precision for scheduler thread)
+#[cfg(target_os = "windows")]
+#[link(name = "winmm")]
+extern "system" {
+    fn timeBeginPeriod(uPeriod: u32) -> u32;
+    fn timeEndPeriod(uPeriod: u32) -> u32;
+}
+
 struct AppState {
     engine: AudioEngine,
     sc_engine: Mutex<Option<ScEngine>>,
@@ -26,6 +34,7 @@ struct AppState {
     loaded_samples: Mutex<HashMap<String, (Vec<f32>, u32)>>,
     session_id: Mutex<u64>,
     log_messages: Mutex<Vec<LogEntry>>,
+    user_samples_dir: Mutex<Option<PathBuf>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -51,6 +60,20 @@ struct RunResult {
     duration_estimate: f32,
     effective_bpm: f32,
     setup_time_ms: f64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UserSampleInfo {
+    pub name: String,
+    pub path: String,
+    pub file_type: String,       // "wav", "mp3"
+    pub duration_secs: f32,
+    pub sample_rate: u32,
+    pub bpm_estimate: Option<f32>,
+    pub audio_type: String,      // "drums", "vocal", "instrumental", "bass", "pad", "fx", "loop", "one-shot", "unknown"
+    pub feeling: String,         // "energetic", "calm", "dark", "bright", "aggressive", "mellow", "neutral"
+    pub tags: Vec<String>,
+    pub folder: String,          // subfolder relative to user samples root
 }
 
 #[tauri::command]
@@ -182,6 +205,15 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
             level: "info".to_string(),
             message: "Using SuperCollider engine".to_string(),
         });
+
+        // Stop any previous playback before starting new code
+        // This ensures clean state when switching buffers
+        {
+            let sc_stop = state.sc_engine.lock();
+            if let Some(ref sc) = *sc_stop {
+                let _ = sc.stop_all();
+            }
+        }
 
         let sc_guard = state.sc_engine.lock();
         let sc = sc_guard.as_ref().ok_or("SuperCollider engine not initialized")?;
@@ -332,12 +364,20 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
             let schedule_ref = Instant::now();
             scheduler_started = schedule_ref;
             std::thread::spawn(move || {
+                // Set Windows timer resolution to 1ms for precise scheduling
+                #[cfg(target_os = "windows")]
+                unsafe {
+                    timeBeginPeriod(1);
+                }
+
                 let start_time = schedule_ref;
 
                 for (target_time, evt) in all_events {
                     // Check if session is still valid
                     if *state_clone.session_id.lock() != current_session {
                         eprintln!("[SC scheduler] Session cancelled, stopping scheduler");
+                        #[cfg(target_os = "windows")]
+                        unsafe { timeEndPeriod(1); }
                         return;
                     }
 
@@ -361,6 +401,8 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
 
                     // Re-check session after sleeping
                     if *state_clone.session_id.lock() != current_session {
+                        #[cfg(target_os = "windows")]
+                        unsafe { timeEndPeriod(1); }
                         return;
                     }
 
@@ -405,6 +447,10 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                     drop(sc_lock);
                 }
                 eprintln!("[SC scheduler] All {} events played", event_count);
+
+                // Restore default Windows timer resolution
+                #[cfg(target_os = "windows")]
+                unsafe { timeEndPeriod(1); }
             });
         }
     } else {
@@ -1018,6 +1064,432 @@ fn get_env_var(key: String) -> Option<String> {
 }
 
 // ============================================================
+// USER SAMPLE SCANNING & ANALYSIS
+// ============================================================
+
+/// Set the user samples directory path
+#[tauri::command]
+fn set_user_samples_dir(dir: String, state: tauri::State<Arc<AppState>>) -> Result<String, String> {
+    let path = PathBuf::from(&dir);
+    if !path.exists() {
+        return Err(format!("Directory does not exist: {}", dir));
+    }
+    if !path.is_dir() {
+        return Err(format!("Path is not a directory: {}", dir));
+    }
+    *state.user_samples_dir.lock() = Some(path);
+    Ok(format!("User samples directory set to: {}", dir))
+}
+
+/// Get the current user samples directory
+#[tauri::command]
+fn get_user_samples_dir(state: tauri::State<Arc<AppState>>) -> Option<String> {
+    state.user_samples_dir.lock().as_ref().map(|p| p.to_string_lossy().to_string())
+}
+
+/// Scan user samples directory and analyze each audio file
+#[tauri::command]
+fn scan_user_samples(state: tauri::State<Arc<AppState>>) -> Result<Vec<UserSampleInfo>, String> {
+    let dir = state.user_samples_dir.lock().clone();
+    let dir = dir.ok_or_else(|| "No user samples directory set".to_string())?;
+    
+    if !dir.exists() {
+        return Err(format!("Directory does not exist: {}", dir.display()));
+    }
+    
+    let mut results = Vec::new();
+    let root = dir.clone();
+    
+    for entry in walkdir::WalkDir::new(&dir).into_iter().filter_map(|e| e.ok()) {
+        let path = entry.path();
+        if let Some(ext) = path.extension() {
+            let ext_lower = ext.to_string_lossy().to_lowercase();
+            if ext_lower == "wav" || ext_lower == "mp3" {
+                match analyze_audio_file(path, &root) {
+                    Ok(info) => results.push(info),
+                    Err(e) => {
+                        eprintln!("[scan_user_samples] Failed to analyze {}: {}", path.display(), e);
+                    }
+                }
+            }
+        }
+    }
+    
+    eprintln!("[scan_user_samples] Found {} audio files in {}", results.len(), dir.display());
+    Ok(results)
+}
+
+/// Analyze a single audio file and produce metadata
+fn analyze_audio_file(path: &std::path::Path, root: &std::path::Path) -> Result<UserSampleInfo, String> {
+    let path_str = path.to_string_lossy().to_string();
+    let ext = path.extension()
+        .map(|e| e.to_string_lossy().to_lowercase())
+        .unwrap_or_default();
+    
+    let name = path.file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_default();
+    
+    let folder = path.parent()
+        .map(|p| {
+            p.strip_prefix(root)
+                .unwrap_or(p)
+                .to_string_lossy()
+                .to_string()
+        })
+        .unwrap_or_default();
+    
+    // Load audio data for analysis
+    let (samples, sample_rate) = sample::load_wav(&path_str)?;
+    
+    let duration_secs = if sample_rate > 0 {
+        samples.len() as f32 / sample_rate as f32
+    } else {
+        0.0
+    };
+    
+    // Estimate BPM using onset detection
+    let bpm_estimate = estimate_bpm(&samples, sample_rate);
+    
+    // Classify the audio type based on spectral content and filename hints
+    let audio_type = classify_audio_type(&name, &folder, &samples, sample_rate, duration_secs);
+    
+    // Detect the feeling/mood
+    let feeling = detect_feeling(&name, &folder, &samples, sample_rate);
+    
+    // Generate tags from all analysis
+    let tags = generate_tags(&name, &folder, &audio_type, &feeling, duration_secs, bpm_estimate);
+    
+    Ok(UserSampleInfo {
+        name,
+        path: path_str,
+        file_type: ext,
+        duration_secs,
+        sample_rate,
+        bpm_estimate,
+        audio_type,
+        feeling,
+        tags,
+        folder,
+    })
+}
+
+/// Estimate BPM from audio using onset detection (energy-based)
+fn estimate_bpm(samples: &[f32], sample_rate: u32) -> Option<f32> {
+    if samples.len() < (sample_rate as usize) {
+        return None; // Too short for meaningful BPM detection
+    }
+    
+    let hop_size = sample_rate as usize / 20; // 50ms hops
+    let frame_size = hop_size * 2;
+    
+    if samples.len() < frame_size {
+        return None;
+    }
+    
+    // Compute energy in each frame
+    let mut energies: Vec<f32> = Vec::new();
+    let mut i = 0;
+    while i + frame_size <= samples.len() {
+        let energy: f32 = samples[i..i + frame_size].iter().map(|s| s * s).sum::<f32>() / frame_size as f32;
+        energies.push(energy);
+        i += hop_size;
+    }
+    
+    if energies.len() < 4 {
+        return None;
+    }
+    
+    // Compute spectral flux (onset strength)
+    let mut onset_strength: Vec<f32> = Vec::new();
+    onset_strength.push(0.0);
+    for j in 1..energies.len() {
+        let diff = (energies[j] - energies[j - 1]).max(0.0);
+        onset_strength.push(diff);
+    }
+    
+    // Normalize onset strength
+    let max_onset = onset_strength.iter().cloned().fold(0.0f32, f32::max);
+    if max_onset < 1e-6 {
+        return None;
+    }
+    for v in onset_strength.iter_mut() {
+        *v /= max_onset;
+    }
+    
+    // Find peaks in onset strength (threshold: 0.3)
+    let threshold = 0.3;
+    let mut peak_positions: Vec<usize> = Vec::new();
+    for j in 1..onset_strength.len() - 1 {
+        if onset_strength[j] > threshold
+            && onset_strength[j] >= onset_strength[j - 1]
+            && onset_strength[j] >= onset_strength[j + 1]
+        {
+            peak_positions.push(j);
+        }
+    }
+    
+    if peak_positions.len() < 2 {
+        return None;
+    }
+    
+    // Calculate intervals between peaks
+    let mut intervals: Vec<f32> = Vec::new();
+    for j in 1..peak_positions.len() {
+        let interval_samples = (peak_positions[j] - peak_positions[j - 1]) as f32 * hop_size as f32;
+        let interval_secs = interval_samples / sample_rate as f32;
+        if interval_secs > 0.2 && interval_secs < 2.0 {
+            // Reasonable range: 30-300 BPM
+            intervals.push(interval_secs);
+        }
+    }
+    
+    if intervals.is_empty() {
+        return None;
+    }
+    
+    // Median interval
+    intervals.sort_by(|a, b| a.partial_cmp(b).unwrap_or(std::cmp::Ordering::Equal));
+    let median_interval = intervals[intervals.len() / 2];
+    
+    let raw_bpm = 60.0 / median_interval;
+    
+    // Normalize to standard range (60-200 BPM)
+    let bpm = if raw_bpm < 60.0 {
+        raw_bpm * 2.0
+    } else if raw_bpm > 200.0 {
+        raw_bpm / 2.0
+    } else {
+        raw_bpm
+    };
+    
+    // Round to nearest integer
+    Some((bpm * 10.0).round() / 10.0)
+}
+
+/// Classify audio type based on filename, spectral content, and duration
+fn classify_audio_type(name: &str, folder: &str, samples: &[f32], sample_rate: u32, duration: f32) -> String {
+    let name_lower = name.to_lowercase();
+    let folder_lower = folder.to_lowercase();
+    let context = format!("{} {}", name_lower, folder_lower);
+    
+    // Filename-based classification (most reliable)
+    if context.contains("kick") || context.contains("bd_") || context.contains("bassdrum") || context.contains("bass_drum") {
+        return "drums".to_string();
+    }
+    if context.contains("snare") || context.contains("sd_") || context.contains("clap") {
+        return "drums".to_string();
+    }
+    if context.contains("hihat") || context.contains("hh_") || context.contains("hat_") || context.contains("cymbal") {
+        return "drums".to_string();
+    }
+    if context.contains("drum") || context.contains("perc") || context.contains("tom_") || context.contains("rim") {
+        return "drums".to_string();
+    }
+    if context.contains("vocal") || context.contains("voice") || context.contains("vox") || context.contains("sing") || context.contains("choir") {
+        return "vocal".to_string();
+    }
+    if context.contains("bass") || context.contains("sub_") || context.contains("808") {
+        return "bass".to_string();
+    }
+    if context.contains("pad") || context.contains("ambient") || context.contains("atmo") || context.contains("drone") {
+        return "pad".to_string();
+    }
+    if context.contains("fx") || context.contains("sfx") || context.contains("riser") || context.contains("impact") || context.contains("sweep") || context.contains("whoosh") {
+        return "fx".to_string();
+    }
+    if context.contains("loop") || context.contains("break") {
+        return "loop".to_string();
+    }
+    if context.contains("lead") || context.contains("melody") || context.contains("synth") || context.contains("pluck") || context.contains("key") || context.contains("piano") || context.contains("guitar") {
+        return "instrumental".to_string();
+    }
+    
+    // Duration-based heuristics
+    if duration < 0.5 {
+        return "one-shot".to_string();
+    }
+    
+    // Spectral analysis for unknown samples
+    if !samples.is_empty() && sample_rate > 0 {
+        // Check zero-crossing rate (high = percussive/noise, low = tonal)
+        let zcr = zero_crossing_rate(samples);
+        
+        // Check RMS energy distribution
+        let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+        
+        // High ZCR + short duration = likely drums/percussion
+        if zcr > 0.15 && duration < 1.5 {
+            return "drums".to_string();
+        }
+        
+        // Very low frequency content = likely bass
+        let low_energy_ratio = spectral_low_ratio(samples, sample_rate);
+        if low_energy_ratio > 0.7 {
+            return "bass".to_string();
+        }
+        
+        // Long duration with low RMS variation = likely pad
+        if duration > 3.0 && rms < 0.3 {
+            return "pad".to_string();
+        }
+    }
+    
+    if duration > 2.0 {
+        "loop".to_string()
+    } else {
+        "one-shot".to_string()
+    }
+}
+
+/// Detect the feeling/mood of an audio sample
+fn detect_feeling(name: &str, folder: &str, samples: &[f32], _sample_rate: u32) -> String {
+    let context = format!("{} {}", name.to_lowercase(), folder.to_lowercase());
+    
+    // Filename-based mood detection
+    if context.contains("dark") || context.contains("horror") || context.contains("evil") || context.contains("sinister") {
+        return "dark".to_string();
+    }
+    if context.contains("bright") || context.contains("happy") || context.contains("joy") || context.contains("upbeat") || context.contains("uplifting") {
+        return "bright".to_string();
+    }
+    if context.contains("calm") || context.contains("chill") || context.contains("soft") || context.contains("gentle") || context.contains("relax") {
+        return "calm".to_string();
+    }
+    if context.contains("aggro") || context.contains("aggressive") || context.contains("hard") || context.contains("heavy") || context.contains("distort") {
+        return "aggressive".to_string();
+    }
+    if context.contains("energy") || context.contains("power") || context.contains("pump") || context.contains("drive") || context.contains("hype") {
+        return "energetic".to_string();
+    }
+    if context.contains("mellow") || context.contains("smooth") || context.contains("warm") || context.contains("lo-fi") || context.contains("lofi") {
+        return "mellow".to_string();
+    }
+    
+    // Spectral analysis for mood
+    if !samples.is_empty() {
+        let rms = (samples.iter().map(|s| s * s).sum::<f32>() / samples.len() as f32).sqrt();
+        let peak = samples.iter().map(|s| s.abs()).fold(0.0f32, f32::max);
+        let crest_factor = if rms > 0.0 { peak / rms } else { 1.0 };
+        
+        if rms > 0.4 && crest_factor < 3.0 {
+            return "aggressive".to_string();
+        }
+        if rms > 0.25 {
+            return "energetic".to_string();
+        }
+        if rms < 0.08 {
+            return "calm".to_string();
+        }
+    }
+    
+    "neutral".to_string()
+}
+
+/// Generate tags for a sample based on all analysis data
+fn generate_tags(name: &str, folder: &str, audio_type: &str, feeling: &str, duration: f32, bpm: Option<f32>) -> Vec<String> {
+    let mut tags = Vec::new();
+    
+    // Add the audio type as a tag
+    tags.push(audio_type.to_string());
+    
+    // Add the feeling as a tag
+    if feeling != "neutral" {
+        tags.push(feeling.to_string());
+    }
+    
+    // Duration categories
+    if duration < 0.3 {
+        tags.push("short".to_string());
+    } else if duration < 2.0 {
+        tags.push("medium".to_string());
+    } else if duration < 10.0 {
+        tags.push("long".to_string());
+    } else {
+        tags.push("extra-long".to_string());
+    }
+    
+    // BPM tags
+    if let Some(b) = bpm {
+        if b < 90.0 {
+            tags.push("slow".to_string());
+        } else if b < 130.0 {
+            tags.push("mid-tempo".to_string());
+        } else if b < 160.0 {
+            tags.push("fast".to_string());
+        } else {
+            tags.push("very-fast".to_string());
+        }
+    }
+    
+    // Filename-based extra tags
+    let name_lower = name.to_lowercase();
+    let folder_lower = folder.to_lowercase();
+    let ctx = format!("{} {}", name_lower, folder_lower);
+    
+    let keyword_tags = [
+        ("vintage", "vintage"), ("retro", "retro"), ("analog", "analog"),
+        ("digital", "digital"), ("electronic", "electronic"), ("acoustic", "acoustic"),
+        ("wet", "wet"), ("dry", "dry"), ("reverb", "reverb"),
+        ("delay", "delay"), ("distort", "distorted"), ("clean", "clean"),
+        ("mono", "mono"), ("stereo", "stereo"),
+        ("minor", "minor"), ("major", "major"),
+        ("trap", "trap"), ("house", "house"), ("techno", "techno"),
+        ("dnb", "dnb"), ("dubstep", "dubstep"), ("hip_hop", "hip-hop"),
+        ("jazz", "jazz"), ("rock", "rock"), ("pop", "pop"),
+        ("cinematic", "cinematic"), ("orchestral", "orchestral"),
+    ];
+    
+    for (keyword, tag) in keyword_tags {
+        if ctx.contains(keyword) && !tags.contains(&tag.to_string()) {
+            tags.push(tag.to_string());
+        }
+    }
+    
+    tags
+}
+
+/// Calculate zero-crossing rate of audio samples
+fn zero_crossing_rate(samples: &[f32]) -> f32 {
+    if samples.len() < 2 {
+        return 0.0;
+    }
+    let crossings = samples.windows(2)
+        .filter(|w| (w[0] >= 0.0 && w[1] < 0.0) || (w[0] < 0.0 && w[1] >= 0.0))
+        .count();
+    crossings as f32 / (samples.len() - 1) as f32
+}
+
+/// Calculate ratio of energy in low frequencies (< 300 Hz) using simple band analysis
+fn spectral_low_ratio(samples: &[f32], sample_rate: u32) -> f32 {
+    if samples.is_empty() || sample_rate == 0 {
+        return 0.5;
+    }
+    
+    // Simple approach: low-pass filter and compare energy
+    let cutoff = 300.0;
+    let rc = 1.0 / (2.0 * std::f32::consts::PI * cutoff);
+    let dt = 1.0 / sample_rate as f32;
+    let alpha = dt / (rc + dt);
+    
+    let mut lp = 0.0f32;
+    let mut low_energy = 0.0f32;
+    let mut total_energy = 0.0f32;
+    
+    for &s in samples.iter().take(sample_rate as usize * 2) { // Analyze first 2 seconds
+        lp = lp + alpha * (s - lp);
+        low_energy += lp * lp;
+        total_energy += s * s;
+    }
+    
+    if total_energy < 1e-10 {
+        return 0.5;
+    }
+    
+    low_energy / total_energy
+}
+
+// ============================================================
 // SUPERCOLLIDER COMMANDS
 // ============================================================
 
@@ -1229,10 +1701,12 @@ pub fn run() {
         loaded_samples: Mutex::new(HashMap::new()),
         session_id: Mutex::new(0),
         log_messages: Mutex::new(Vec::new()),
+        user_samples_dir: Mutex::new(None),
     });
 
     tauri::Builder::default()
         .plugin(tauri_plugin_opener::init())
+        .plugin(tauri_plugin_dialog::init())
         .manage(app_state.clone())
         .setup(move |app| {
             // Try to resolve SC bundle from Tauri's resource directory
@@ -1292,6 +1766,9 @@ pub fn run() {
             init_supercollider,
             sc_status,
             toggle_sc_engine,
+            set_user_samples_dir,
+            get_user_samples_dir,
+            scan_user_samples,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");

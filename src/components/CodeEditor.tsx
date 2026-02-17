@@ -186,11 +186,39 @@ const CodeEditor: React.FC = () => {
       },
     });
 
+    // Custom theme — Amber
+    monaco.editor.defineTheme('amberTheme', {
+      base: 'vs-dark',
+      inherit: true,
+      rules: [
+        { token: 'comment', foreground: '6B5F48', fontStyle: 'italic' },
+        { token: 'keyword', foreground: 'FFAA00', fontStyle: 'bold' },
+        { token: 'type.identifier', foreground: 'FF6600' },
+        { token: 'variable', foreground: 'FFAA00' },
+        { token: 'number', foreground: 'FF6600' },
+        { token: 'string', foreground: '88CC44' },
+      ],
+      colors: {
+        'editor.background': '#0f0d08',
+        'editor.foreground': '#f0e6d2',
+        'editor.lineHighlightBackground': '#1a1710',
+        'editorCursor.foreground': '#ffaa00',
+        'editor.selectionBackground': '#2a2010',
+        'editorLineNumber.foreground': '#4a4030',
+        'editorLineNumber.activeForeground': '#8a7a5a',
+      },
+    });
+
     monacoRef.current = monaco;
 
     // Apply theme based on current store state
     const currentTheme = useStore.getState().theme;
-    monaco.editor.setTheme(currentTheme === 'sonicpi' ? 'sonicPiClassic' : 'sonicDark');
+    const monacoThemeMap: Record<string, string> = {
+      pibeat: 'sonicDark',
+      sonicpi: 'sonicPiClassic',
+      amber: 'amberTheme',
+    };
+    monaco.editor.setTheme(monacoThemeMap[currentTheme] || 'sonicDark');
 
     // Key bindings
     editor.addAction({
@@ -229,18 +257,23 @@ const CodeEditor: React.FC = () => {
   // Switch Monaco theme when app theme changes
   useEffect(() => {
     if (monacoRef.current) {
-      monacoRef.current.editor.setTheme(
-        theme === 'sonicpi' ? 'sonicPiClassic' : 'sonicDark'
-      );
+      const monacoThemeMap: Record<string, string> = {
+        pibeat: 'sonicDark',
+        sonicpi: 'sonicPiClassic',
+        amber: 'amberTheme',
+      };
+      monacoRef.current.editor.setTheme(monacoThemeMap[theme] || 'sonicDark');
     }
   }, [theme]);
+
+  const editorTheme = theme === 'sonicpi' ? 'sonicPiClassic' : theme === 'amber' ? 'amberTheme' : 'sonicDark';
 
   return (
     <div className="code-editor">
       <Editor
         height="100%"
         language="sonicpi"
-        theme={theme === 'sonicpi' ? 'sonicPiClassic' : 'sonicDark'}
+        theme={editorTheme}
         value={activeBuffer?.code || ''}
         onChange={(value) => {
           if (value !== undefined) {

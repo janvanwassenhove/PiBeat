@@ -17,6 +17,7 @@ const AgentChat: React.FC = () => {
     agentModel,
     setAgentProvider,
     setAgentModel,
+    userSamples,
   } = useStore();
 
   const [input, setInput] = useState('');
@@ -81,6 +82,19 @@ const AgentChat: React.FC = () => {
         apiKeyLength: apiKey?.length || 0,
       });
 
+      // Prepare user sample info for the agent
+      const userSampleContext = userSamples.length > 0
+        ? userSamples.map(s => ({
+            name: s.name,
+            path: s.path,
+            audio_type: s.audio_type,
+            feeling: s.feeling,
+            duration_secs: s.duration_secs,
+            bpm_estimate: s.bpm_estimate,
+            tags: s.tags,
+          }))
+        : undefined;
+
       const response = await reactiveAgentProcess(
         {
           provider: agentProvider,
@@ -92,6 +106,7 @@ const AgentChat: React.FC = () => {
           currentCode,
           conversationHistory: agentMessages,
           userMessage: trimmed,
+          userSamples: userSampleContext,
         }
       );
 

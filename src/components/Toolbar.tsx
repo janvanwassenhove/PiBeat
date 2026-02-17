@@ -12,6 +12,7 @@ import {
   FaQuestionCircle,
   FaRobot,
   FaBullseye,
+  FaFolderOpen,
 } from 'react-icons/fa';
 
 const FaWaveSquare = () => <span style={{fontSize: '14px'}}>~</span>;
@@ -38,12 +39,14 @@ const Toolbar: React.FC = () => {
     toggleHelp,
     toggleAgentChat,
     toggleCuePanel,
+    toggleUserSamplePanel,
     showSampleBrowser,
     showSynthBrowser,
     showEffectsPanel,
     showHelp,
     showAgentChat,
     showCuePanel,
+    showUserSamplePanel,
     initSuperCollider,
     toggleScEngine,
     fetchScStatus,
@@ -172,6 +175,13 @@ const Toolbar: React.FC = () => {
           <FaRobot />
         </button>
         <button
+          className={`toolbar-btn panel-btn ${showUserSamplePanel ? 'panel-btn-active' : ''}`}
+          onClick={toggleUserSamplePanel}
+          title="My Samples"
+        >
+          <FaFolderOpen />
+        </button>
+        <button
           className={`toolbar-btn panel-btn ${showCuePanel ? 'panel-btn-active' : ''}`}
           onClick={toggleCuePanel}
           title="Cue Panel"
@@ -191,8 +201,8 @@ const Toolbar: React.FC = () => {
               : 'Click to initialize SuperCollider (requires SC installed)'
           }
           style={{
-            color: scStatus.enabled ? (theme === 'sonicpi' ? '#ff59b2' : '#00ff88') : scStatus.available ? '#ffa500' : undefined,
-            borderColor: scStatus.enabled ? (theme === 'sonicpi' ? '#ff59b2' : '#00ff88') : undefined,
+            color: scStatus.enabled ? (theme === 'sonicpi' ? '#ff59b2' : theme === 'amber' ? '#ffaa00' : '#00ff88') : scStatus.available ? '#ffa500' : undefined,
+            borderColor: scStatus.enabled ? (theme === 'sonicpi' ? '#ff59b2' : theme === 'amber' ? '#ffaa00' : '#00ff88') : undefined,
           }}
         >
           <FaSuperCollider />

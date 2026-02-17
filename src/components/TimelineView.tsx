@@ -743,20 +743,7 @@ const TrackLane: React.FC<{
   );
 };
 
-// ─── Playhead ────────────────────────────────────────────────────
-
-const Playhead: React.FC<{
-  beat: number;
-  pixelsPerBeat: number;
-}> = ({ beat, pixelsPerBeat }) => (
-  <div
-    className="timeline-playhead"
-    style={{ left: beat * pixelsPerBeat }}
-  >
-    <div className="playhead-head" />
-    <div className="playhead-line" />
-  </div>
-);
+// ─── Playhead (unused standalone – now rendered inline) ─────────
 
 // ─── Main TimelineView ──────────────────────────────────────────
 
@@ -767,6 +754,9 @@ const TimelineView: React.FC = () => {
   const scrollContainerRef = useRef<HTMLDivElement>(null);
   const [scrollLeft, setScrollLeft] = useState(0);
   const playStartTimeRef = useRef<number | null>(null);
+  const isDraggingPlayhead = useRef(false);
+  const [isDraggingPlayheadVisual, setIsDraggingPlayheadVisual] = useState(false);
+  const rulerScrollRef = useRef<HTMLDivElement>(null);
 
   // Parse only the active buffer into timeline data
   const timelineData: TimelineData = useMemo(() => {
@@ -819,7 +809,10 @@ const TimelineView: React.FC = () => {
       // Offset playhead by setup time so it aligns with when audio actually started
       playStartTimeRef.current = Date.now() - setupTimeMs;
       const animate = () => {
-        if (!playStartTimeRef.current) return;
+        if (!playStartTimeRef.current || isDraggingPlayhead.current) {
+          requestAnimationFrame(animate);
+          return;
+        }
         const elapsed = (Date.now() - playStartTimeRef.current) / 1000;
         const beat = elapsed * (effectiveBpm / 60);
         setPlayheadBeat(beat);
@@ -831,9 +824,63 @@ const TimelineView: React.FC = () => {
       return () => cancelAnimationFrame(raf);
     } else {
       playStartTimeRef.current = null;
-      setPlayheadBeat(0);
+      // Keep current playhead position when stopping (don't reset to 0)
     }
   }, [isPlaying, effectiveBpm, totalBeats]);
+
+  // Seek the playhead to a specific beat
+  const seekToBeat = useCallback((beat: number) => {
+    const clampedBeat = Math.max(0, Math.min(beat, totalBeats));
+    setPlayheadBeat(clampedBeat);
+    if (isPlaying) {
+      // Adjust playStartTimeRef so animation continues from this beat
+      const secondsForBeat = clampedBeat * (60 / effectiveBpm);
+      playStartTimeRef.current = Date.now() - secondsForBeat * 1000;
+    }
+  }, [isPlaying, effectiveBpm, totalBeats]);
+
+  // Ruler click to seek
+  const handleRulerClick = useCallback((e: React.MouseEvent<HTMLDivElement>) => {
+    // Don't seek if click originated from playhead drag
+    if (isDraggingPlayhead.current) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const x = e.clientX - rect.left + e.currentTarget.scrollLeft;
+    const beat = x / pixelsPerBeat;
+    seekToBeat(beat);
+  }, [pixelsPerBeat, seekToBeat]);
+
+  // Playhead drag handlers
+  const handlePlayheadDragStart = useCallback((e: React.MouseEvent) => {
+    e.preventDefault();
+    e.stopPropagation();
+    isDraggingPlayhead.current = true;
+    setIsDraggingPlayheadVisual(true);
+
+    const onMove = (ev: MouseEvent) => {
+      if (!rulerScrollRef.current) return;
+      const rect = rulerScrollRef.current.getBoundingClientRect();
+      const x = ev.clientX - rect.left + rulerScrollRef.current.scrollLeft;
+      const beat = Math.max(0, Math.min(x / pixelsPerBeat, totalBeats));
+      setPlayheadBeat(beat);
+    };
+
+    const onUp = (ev: MouseEvent) => {
+      isDraggingPlayhead.current = false;
+      setIsDraggingPlayheadVisual(false);
+      window.removeEventListener('mousemove', onMove);
+      window.removeEventListener('mouseup', onUp);
+      // Calculate final beat and update play start ref
+      if (rulerScrollRef.current) {
+        const rect = rulerScrollRef.current.getBoundingClientRect();
+        const x = ev.clientX - rect.left + rulerScrollRef.current.scrollLeft;
+        const beat = Math.max(0, Math.min(x / pixelsPerBeat, totalBeats));
+        seekToBeat(beat);
+      }
+    };
+
+    window.addEventListener('mousemove', onMove);
+    window.addEventListener('mouseup', onUp);
+  }, [pixelsPerBeat, totalBeats, seekToBeat]);
 
   const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
     setScrollLeft(e.currentTarget.scrollLeft);
@@ -1017,7 +1064,7 @@ const TimelineView: React.FC = () => {
         {/* Ruler row */}
         <div className="timeline-ruler-row">
           <div className="timeline-ruler-spacer" />
-          <div className="timeline-ruler-scroll">
+          <div className="timeline-ruler-scroll" ref={rulerScrollRef} onClick={handleRulerClick}>
             <TimeRuler
               totalBeats={totalBeats}
               pixelsPerBeat={pixelsPerBeat}
@@ -1025,12 +1072,16 @@ const TimelineView: React.FC = () => {
               scrollLeft={scrollLeft}
               sections={timelineData.sections}
             />
-            {isPlaying && (
-              <div className="timeline-playhead" style={{ left: playheadBeat * pixelsPerBeat }}>
-                <div className="playhead-head" />
-                <div className="playhead-line" />
-              </div>
-            )}
+            <div
+              className={`timeline-playhead ${isDraggingPlayheadVisual ? 'dragging' : ''}`}
+              style={{ left: playheadBeat * pixelsPerBeat }}
+            >
+              <div
+                className="playhead-head"
+                onMouseDown={handlePlayheadDragStart}
+              />
+              <div className="playhead-line" />
+            </div>
           </div>
         </div>
 
@@ -1084,12 +1135,10 @@ const TimelineView: React.FC = () => {
                 </div>
               ))}
               {/* Playhead line spanning all tracks */}
-              {isPlaying && (
-                <div
-                  className="timeline-playhead-track-line"
-                  style={{ left: playheadBeat * pixelsPerBeat }}
-                />
-              )}
+              <div
+                className="timeline-playhead-track-line"
+                style={{ left: playheadBeat * pixelsPerBeat }}
+              />
             </div>
           </div>
         )}

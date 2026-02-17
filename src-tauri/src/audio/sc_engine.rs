@@ -366,6 +366,10 @@ impl ScEngine {
             args.push(OscType::Float(*val));
         }
 
+        eprintln!("[SC play_note] def={}, node={}, out={}, freq={:.1}, amp={:.3} (raw={:.3}*vol={:.3}), sustain_time={:.3}, attack={:.3}, decay={:.3}, release={:.3}, sustain_level={:.3}, dur_secs={:.3}",
+            def_name, node_id, out_bus, frequency, amplitude * master_vol, amplitude, master_vol,
+            sustain_time, envelope.attack, envelope.decay, envelope.release, envelope.sustain, duration_secs);
+
         self.send_osc_msg("/s_new", args)?;
         self.state.lock().is_playing = true;
         Ok(())
@@ -451,7 +455,7 @@ impl ScEngine {
         Ok(buf_id)
     }
 
-    /// Stop all audio
+    /// Stop all audio and reset all state for a clean restart
     pub fn stop_all(&self) -> Result<(), String> {
         // Free all nodes in the source group
         self.send_osc_msg(
@@ -459,13 +463,17 @@ impl ScEngine {
             vec![OscType::Int(SOURCE_GROUP)],
         )?;
 
-        // Also free FX group nodes and re-create the groups
+        // Also free FX group nodes
         self.send_osc_msg(
             "/g_freeAll",
             vec![OscType::Int(FX_GROUP)],
         )?;
 
         self.active_fx_nodes.lock().clear();
+        // Reset the FX bus stack so the next run starts clean
+        self.fx_bus_stack.lock().clear();
+        // Reset bus allocator back to 16 (first private bus)
+        self.next_bus_id.store(16, Ordering::Relaxed);
         self.state.lock().is_playing = false;
 
         Ok(())
@@ -505,6 +513,9 @@ impl ScEngine {
 
         let mut new_fx = Vec::new();
 
+        // Global FX use in_bus=0, out=0 (insert-effect on the main bus)
+        // They read from hardware bus 0, process, and write back to bus 0.
+
         // Add LPF if cutoff is below 20000
         if lpf_cutoff < 19000.0 {
             let node_id = self.alloc_node_id();
@@ -515,6 +526,8 @@ impl ScEngine {
                     OscType::Int(node_id),
                     OscType::Int(ADD_TO_TAIL),
                     OscType::Int(FX_GROUP),
+                    OscType::String("in_bus".to_string()),
+                    OscType::Int(0),
                     OscType::String("out".to_string()),
                     OscType::Int(0),
                     OscType::String("cutoff".to_string()),
@@ -534,6 +547,8 @@ impl ScEngine {
                     OscType::Int(node_id),
                     OscType::Int(ADD_TO_TAIL),
                     OscType::Int(FX_GROUP),
+                    OscType::String("in_bus".to_string()),
+                    OscType::Int(0),
                     OscType::String("out".to_string()),
                     OscType::Int(0),
                     OscType::String("cutoff".to_string()),
@@ -553,6 +568,8 @@ impl ScEngine {
                     OscType::Int(node_id),
                     OscType::Int(ADD_TO_TAIL),
                     OscType::Int(FX_GROUP),
+                    OscType::String("in_bus".to_string()),
+                    OscType::Int(0),
                     OscType::String("out".to_string()),
                     OscType::Int(0),
                     OscType::String("distort".to_string()),
@@ -572,6 +589,8 @@ impl ScEngine {
                     OscType::Int(node_id),
                     OscType::Int(ADD_TO_TAIL),
                     OscType::Int(FX_GROUP),
+                    OscType::String("in_bus".to_string()),
+                    OscType::Int(0),
                     OscType::String("out".to_string()),
                     OscType::Int(0),
                     OscType::String("phase".to_string()),
@@ -593,6 +612,8 @@ impl ScEngine {
                     OscType::Int(node_id),
                     OscType::Int(ADD_TO_TAIL),
                     OscType::Int(FX_GROUP),
+                    OscType::String("in_bus".to_string()),
+                    OscType::Int(0),
                     OscType::String("out".to_string()),
                     OscType::Int(0),
                     OscType::String("mix".to_string()),
@@ -786,7 +807,11 @@ impl ScEngine {
 
         // In bundled mode, tell scsynth where to find UGen plugins
         if let Some(ref plugins_dir) = self.plugins_dir {
-            let plugins_path = plugins_dir.to_string_lossy().to_string();
+            let mut plugins_path = plugins_dir.to_string_lossy().to_string();
+            // Strip Windows extended-length prefix if present
+            if plugins_path.starts_with(r"\\?\") {
+                plugins_path = plugins_path[4..].to_string();
+            }
             eprintln!("[SC] Using bundled UGen plugins: {}", plugins_path);
             cmd.args(["-U", &plugins_path]);
         }
@@ -796,13 +821,41 @@ impl ScEngine {
             cmd.current_dir(parent);
         }
 
-        let child = cmd
+        let mut child = cmd
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .spawn()
             .map_err(|e| format!("Failed to start scsynth: {}", e))?;
 
         eprintln!("[SC] scsynth started with PID {}", child.id());
+
+        // Capture scsynth stderr in a background thread for diagnostics
+        if let Some(stderr) = child.stderr.take() {
+            std::thread::spawn(move || {
+                use std::io::{BufRead, BufReader};
+                let reader = BufReader::new(stderr);
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) => eprintln!("[scsynth] {}", l),
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+        // Also capture stdout
+        if let Some(stdout) = child.stdout.take() {
+            std::thread::spawn(move || {
+                use std::io::{BufRead, BufReader};
+                let reader = BufReader::new(stdout);
+                for line in reader.lines() {
+                    match line {
+                        Ok(l) => eprintln!("[scsynth:out] {}", l),
+                        Err(_) => break,
+                    }
+                }
+            });
+        }
+
         *self.scsynth_process.lock() = Some(child);
 
         Ok(())
@@ -891,7 +944,11 @@ impl ScEngine {
 
     /// Load compiled SynthDefs into scsynth
     fn load_synthdefs(&self) -> Result<(), String> {
-        let dir_str = self.synthdefs_dir.to_string_lossy().replace('\\', "/");
+        let mut dir_str = self.synthdefs_dir.to_string_lossy().replace('\\', "/");
+        // Strip Windows extended-length prefix if present (scsynth can't parse it)
+        if dir_str.starts_with("//?/") {
+            dir_str = dir_str[4..].to_string();
+        }
         eprintln!("[SC] Loading SynthDefs from {}", dir_str);
 
         self.send_osc_msg(
@@ -1190,6 +1247,19 @@ pub fn find_sc_bundle_dir() -> Option<PathBuf> {
     #[cfg(not(target_os = "windows"))]
     let scsynth_name = "scsynth";
 
+    // Helper: strip Windows extended-length path prefix (\\?\) that
+    // canonicalize() adds — scsynth and other external tools can't parse it.
+    let strip_prefix = |p: PathBuf| -> PathBuf {
+        #[cfg(target_os = "windows")]
+        {
+            let s = p.to_string_lossy();
+            if let Some(stripped) = s.strip_prefix(r"\\?\") {
+                return PathBuf::from(stripped);
+            }
+        }
+        p
+    };
+
     // Helper: check if a bundle dir looks complete (has scsynth + synthdefs + plugins)
     let bundle_score = |dir: &std::path::Path| -> u8 {
         let mut score = 0u8;
@@ -1221,7 +1291,7 @@ pub fn find_sc_bundle_dir() -> Option<PathBuf> {
         PathBuf::from("sc-bundle"),
     ];
     for candidate in dev_paths {
-        let abs = candidate.canonicalize().unwrap_or(candidate);
+        let abs = strip_prefix(candidate.canonicalize().unwrap_or(candidate));
         consider(abs, "dev");
     }
 

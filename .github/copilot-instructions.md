@@ -33,12 +33,14 @@ PiBeat is a desktop music coding application built with **Tauri v2** (Rust backe
 | EffectsPanel | `src/components/EffectsPanel.tsx` | Global effect knobs |
 | HelpPanel | `src/components/HelpPanel.tsx` | Quick reference for Sonic Pi syntax |
 | AgentChat | `src/components/AgentChat.tsx` | AI assistant chat for code help and refactoring |
+| UserSamplePanel | `src/components/UserSamplePanel.tsx` | Browse, preview, and tag user's local audio samples |
 
 ### Store Shape (Zustand)
 ```
 buffers[], activeBufferId, isPlaying, isRecording, masterVolume, bpm,
 waveform[], logs[], samples[], effects{}, showSampleBrowser, showEffectsPanel,
-showHelp, showAgentChat, agentMessages[]
+showHelp, showAgentChat, agentMessages[],
+userSamples[], userSamplesDir, userSamplesLoading, showUserSamplePanel
 ```
 
 ### Tauri Commands (invoke)
@@ -49,6 +51,9 @@ showHelp, showAgentChat, agentMessages[]
 - `get_waveform()`, `get_status()`, `get_logs()`, `clear_logs()`
 - `list_samples()`, `play_sample_file(path)`
 - `set_effects({...})`
+- `set_user_samples_dir(dir)` — Set user sample folder path
+- `get_user_samples_dir()` → `string | null` — Get current user sample folder
+- `scan_user_samples()` → `UserSampleInfo[]` — Scan and analyze user audio files (BPM, type, mood, tags)
 - `get_env_var(key)` → `string | null` — Read system environment variables (used for API keys)
 
 ## Sonic Pi Language Reference

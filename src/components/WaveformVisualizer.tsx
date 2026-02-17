@@ -17,12 +17,13 @@ const WaveformVisualizer: React.FC = () => {
     const midY = height / 2;
 
     const isSonicPi = theme === 'sonicpi';
-    const waveColor = isSonicPi ? '#ff59b2' : '#00ff88';
-    const bgTop = isSonicPi ? '#0a0a0a' : '#0d0d2b';
-    const bgMid = isSonicPi ? '#0e0e0e' : '#121233';
-    const centerLineColor = isSonicPi ? '#1a1a1a' : '#222255';
-    const gridColor = isSonicPi ? '#141414' : '#1a1a40';
-    const fillR = isSonicPi ? '255, 89, 178' : '0, 255, 136';
+    const isAmber = theme === 'amber';
+    const waveColor = isSonicPi ? '#ff59b2' : isAmber ? '#ffaa00' : '#00ff88';
+    const bgTop = isSonicPi ? '#0a0a0a' : isAmber ? '#0f0d08' : '#0d0d2b';
+    const bgMid = isSonicPi ? '#0e0e0e' : isAmber ? '#12100a' : '#121233';
+    const centerLineColor = isSonicPi ? '#1a1a1a' : isAmber ? '#1d1912' : '#222255';
+    const gridColor = isSonicPi ? '#141414' : isAmber ? '#1a1710' : '#1a1a40';
+    const fillR = isSonicPi ? '255, 89, 178' : isAmber ? '255, 170, 0' : '0, 255, 136';
 
     // Clear with gradient background
     const gradient = ctx.createLinearGradient(0, 0, 0, height);
@@ -98,7 +99,7 @@ const WaveformVisualizer: React.FC = () => {
     ctx.fill();
 
     // Draw a secondary lower-opacity waveform for depth
-    ctx.strokeStyle = isSonicPi ? 'rgba(255, 221, 0, 0.25)' : 'rgba(100, 200, 255, 0.3)';
+    ctx.strokeStyle = isSonicPi ? 'rgba(255, 221, 0, 0.25)' : isAmber ? 'rgba(255, 102, 0, 0.25)' : 'rgba(100, 200, 255, 0.3)';
     ctx.lineWidth = 1;
     ctx.beginPath();
     for (let x = 0; x < width; x++) {

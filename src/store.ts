@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { LLMProvider, ModelId } from './llm';
 
-export type AppTheme = 'pibeat' | 'sonicpi';
+export type AppTheme = 'pibeat' | 'sonicpi' | 'amber';
 
 export interface LogEntry {
   timestamp: number;
@@ -14,6 +14,19 @@ export interface SampleInfo {
   name: string;
   path: string;
   category: string;
+}
+
+export interface UserSampleInfo {
+  name: string;
+  path: string;
+  file_type: string;
+  duration_secs: number;
+  sample_rate: number;
+  bpm_estimate: number | null;
+  audio_type: string;
+  feeling: string;
+  tags: string[];
+  folder: string;
 }
 
 export interface EngineStatus {
@@ -90,6 +103,12 @@ interface AppStore {
   // Samples
   samples: SampleInfo[];
   
+  // User Samples
+  userSamples: UserSampleInfo[];
+  userSamplesDir: string | null;
+  userSamplesLoading: boolean;
+  showUserSamplePanel: boolean;
+  
   // Effects
   effects: EffectSettings;
   
@@ -145,8 +164,14 @@ interface AppStore {
   toggleHelp: () => void;
   toggleAgentChat: () => void;
   toggleCuePanel: () => void;
+  toggleUserSamplePanel: () => void;
 
   previewSynth: (synthName: string) => Promise<void>;
+
+  // User Samples actions
+  setUserSamplesDir: (dir: string) => Promise<void>;
+  scanUserSamples: () => Promise<void>;
+  loadUserSamplesDir: () => Promise<void>;
 
   addAgentMessage: (msg: AgentMessage) => void;
   clearAgentMessages: () => void;
@@ -242,6 +267,10 @@ export const useStore = create<AppStore>((set, get) => ({
   showHelp: false,
   showAgentChat: false,
   showCuePanel: false,
+  showUserSamplePanel: false,
+  userSamples: [],
+  userSamplesDir: localStorage.getItem('pibeat-user-samples-dir'),
+  userSamplesLoading: false,
   agentMessages: [],
   agentProvider: 'local',
   agentModel: 'local-rules',
@@ -434,12 +463,59 @@ export const useStore = create<AppStore>((set, get) => ({
   toggleHelp: () => set((s) => ({ showHelp: !s.showHelp })),
   toggleAgentChat: () => set((s) => ({ showAgentChat: !s.showAgentChat })),
   toggleCuePanel: () => set((s) => ({ showCuePanel: !s.showCuePanel })),
+  toggleUserSamplePanel: () => set((s) => ({ showUserSamplePanel: !s.showUserSamplePanel })),
 
   previewSynth: async (synthName) => {
     try {
       await invoke('preview_synth', { synthName });
     } catch (e: any) {
       get().addLog('error', `Failed to preview synth: ${e}`);
+    }
+  },
+
+  setUserSamplesDir: async (dir: string) => {
+    try {
+      await invoke('set_user_samples_dir', { dir });
+      localStorage.setItem('pibeat-user-samples-dir', dir);
+      set({ userSamplesDir: dir });
+      get().addLog('info', `User samples directory set to: ${dir}`);
+      // Auto-scan after setting directory
+      await get().scanUserSamples();
+    } catch (e: any) {
+      get().addLog('error', `Failed to set user samples directory: ${e}`);
+    }
+  },
+
+  scanUserSamples: async () => {
+    const dir = get().userSamplesDir;
+    if (!dir) {
+      get().addLog('error', 'No user samples directory set');
+      return;
+    }
+    set({ userSamplesLoading: true });
+    try {
+      // Ensure backend knows the directory
+      await invoke('set_user_samples_dir', { dir });
+      const samples = await invoke<UserSampleInfo[]>('scan_user_samples');
+      set({ userSamples: samples, userSamplesLoading: false });
+      get().addLog('info', `Scanned ${samples.length} user samples`);
+    } catch (e: any) {
+      set({ userSamplesLoading: false });
+      get().addLog('error', `Failed to scan user samples: ${e}`);
+    }
+  },
+
+  loadUserSamplesDir: async () => {
+    const savedDir = localStorage.getItem('pibeat-user-samples-dir');
+    if (savedDir) {
+      set({ userSamplesDir: savedDir });
+      try {
+        await invoke('set_user_samples_dir', { dir: savedDir });
+        // Auto-scan saved directory
+        await get().scanUserSamples();
+      } catch {
+        // Directory might not exist anymore, just silently fail
+      }
     }
   },
 

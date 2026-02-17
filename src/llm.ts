@@ -256,6 +256,15 @@ interface AgentContext {
   currentCode: string;
   conversationHistory: AgentMessage[];
   userMessage: string;
+  userSamples?: Array<{
+    name: string;
+    path: string;
+    audio_type: string;
+    feeling: string;
+    duration_secs: number;
+    bpm_estimate: number | null;
+    tags: string[];
+  }>;
 }
 
 /**
@@ -272,7 +281,7 @@ export async function reactiveAgentProcess(
   if (config.provider === 'local') {
     console.log('[LLM] Using local rule-based agent');
     const { processAgentMessage } = await import('./agent');
-    return processAgentMessage(context.userMessage, context.currentCode, context.conversationHistory);
+    return processAgentMessage(context.userMessage, context.currentCode, context.conversationHistory, context.userSamples);
   }
 
   // Check for API key from all sources if not provided or empty
@@ -291,7 +300,7 @@ export async function reactiveAgentProcess(
   if (!apiKey) {
     console.warn(`[LLM] No API key found for ${config.provider}, falling back to local mode`);
     const { processAgentMessage } = await import('./agent');
-    return processAgentMessage(context.userMessage, context.currentCode, context.conversationHistory);
+    return processAgentMessage(context.userMessage, context.currentCode, context.conversationHistory, context.userSamples);
   }
 
   console.log(`[LLM] Calling ${config.provider} with model ${config.model}`);
@@ -542,8 +551,29 @@ function buildMessages(
   context: AgentContext,
   reflection: ReflectionResult | null
 ): Array<{ role: 'system' | 'user' | 'assistant'; content: string }> {
+  // Build system context with user samples if available
+  let systemContent = SONIC_PI_SYSTEM_CONTEXT;
+  
+  if (context.userSamples && context.userSamples.length > 0) {
+    systemContent += '\n\n## User\'s Local Sample Library\n';
+    systemContent += 'The user has imported a local sample folder. You can suggest using these samples in compositions.\n';
+    systemContent += 'To use a user sample, use: `sample "full/path/to/file.wav"`\n\n';
+    systemContent += '| Name | Type | Mood | Duration | BPM | Tags |\n|------|------|------|----------|-----|------|\n';
+    // Include up to 50 samples to avoid token overflow
+    const samplesToShow = context.userSamples.slice(0, 50);
+    for (const s of samplesToShow) {
+      const dur = s.duration_secs < 1 ? `${Math.round(s.duration_secs * 1000)}ms` : `${s.duration_secs.toFixed(1)}s`;
+      const bpm = s.bpm_estimate ? `~${Math.round(s.bpm_estimate)}` : '-';
+      systemContent += `| ${s.name} | ${s.audio_type} | ${s.feeling} | ${dur} | ${bpm} | ${s.tags.join(', ')} |\n`;
+    }
+    if (context.userSamples.length > 50) {
+      systemContent += `\n_(${context.userSamples.length - 50} more samples available)_\n`;
+    }
+    systemContent += '\nWhen the user asks for samples or compositions, prefer suggesting their own samples when they match the desired style.\n';
+  }
+
   const messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }> = [
-    { role: 'system', content: SONIC_PI_SYSTEM_CONTEXT },
+    { role: 'system', content: systemContent },
   ];
 
   // Add conversation history

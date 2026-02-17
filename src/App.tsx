@@ -1,4 +1,4 @@
-﻿import React, { useEffect } from "react";
+﻿import React, { useEffect, useState, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import Toolbar from "./components/Toolbar";
 import BufferTabs from "./components/BufferTabs";
@@ -12,30 +12,91 @@ import EffectsPanel from "./components/EffectsPanel";
 import HelpPanel from "./components/HelpPanel";
 import AgentChat from "./components/AgentChat";
 import CuePanel from "./components/CuePanel";
-import { useStore } from "./store";
+import UserSamplePanel from "./components/UserSamplePanel";
+import { useStore, AppTheme } from "./store";
 import "./App.css";
 
+const THEMES: { id: AppTheme; label: string; colors: [string, string, string] }[] = [
+  { id: 'pibeat',  label: 'PiBeat',    colors: ['#0d0d1a', '#00ff88', '#4488ff'] },
+  { id: 'sonicpi', label: 'Sonic Pi',  colors: ['#0a0a0a', '#ff59b2', '#ffdd00'] },
+  { id: 'amber',   label: 'Amber',     colors: ['#0f0d08', '#ffaa00', '#ff6600'] },
+];
+
+const ThemeSwitcher: React.FC<{ theme: AppTheme; setTheme: (t: AppTheme) => void }> = ({ theme, setTheme }) => {
+  const [open, setOpen] = useState(false);
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    const handler = (e: MouseEvent) => {
+      if (ref.current && !ref.current.contains(e.target as Node)) setOpen(false);
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, []);
+
+  const current = THEMES.find(t => t.id === theme) || THEMES[0];
+
+  return (
+    <div className="theme-switcher" ref={ref}>
+      <button
+        className="theme-trigger"
+        onClick={() => setOpen(!open)}
+        title={`Theme: ${current.label}`}
+      >
+        <span className="theme-swatch-row">
+          {current.colors.map((c, i) => (
+            <span key={i} className="theme-dot" style={{ background: c }} />
+          ))}
+        </span>
+        <svg className="theme-chevron" width="8" height="5" viewBox="0 0 8 5">
+          <path d="M0 0 L4 4 L8 0" fill="none" stroke="currentColor" strokeWidth="1.5" />
+        </svg>
+      </button>
+      {open && (
+        <div className="theme-dropdown">
+          {THEMES.map(t => (
+            <button
+              key={t.id}
+              className={`theme-dropdown-item ${theme === t.id ? 'active' : ''}`}
+              onClick={() => { setTheme(t.id); setOpen(false); }}
+            >
+              <span className="theme-swatch-row">
+                {t.colors.map((c, i) => (
+                  <span key={i} className="theme-dot" style={{ background: c }} />
+                ))}
+              </span>
+              <span className="theme-label">{t.label}</span>
+              {theme === t.id && <span className="theme-check">✓</span>}
+            </button>
+          ))}
+        </div>
+      )}
+    </div>
+  );
+};
+
 const App: React.FC = () => {
-  const { fetchSamples, fetchStatus, showSampleBrowser, showSynthBrowser, showEffectsPanel, showHelp, showAgentChat, showCuePanel, viewMode, theme, setTheme } = useStore();
+  const { fetchSamples, fetchStatus, loadUserSamplesDir, showSampleBrowser, showSynthBrowser, showEffectsPanel, showHelp, showAgentChat, showCuePanel, showUserSamplePanel, viewMode, theme, setTheme } = useStore();
 
   useEffect(() => {
     fetchSamples();
+    loadUserSamplesDir();
     const interval = setInterval(() => {
       fetchStatus();
     }, 1000);
     return () => clearInterval(interval);
-  }, [fetchSamples, fetchStatus]);
+  }, [fetchSamples, fetchStatus, loadUserSamplesDir]);
 
   // Apply theme data attribute to root element
   useEffect(() => {
-    if (theme === 'sonicpi') {
-      document.documentElement.setAttribute('data-theme', 'sonicpi');
-    } else {
+    if (theme === 'pibeat') {
       document.documentElement.removeAttribute('data-theme');
+    } else {
+      document.documentElement.setAttribute('data-theme', theme);
     }
   }, [theme]);
 
-  const hasSidePanel = showSampleBrowser || showSynthBrowser || showEffectsPanel || showHelp || showAgentChat || showCuePanel;
+  const hasSidePanel = showSampleBrowser || showSynthBrowser || showEffectsPanel || showHelp || showAgentChat || showCuePanel || showUserSamplePanel;
 
   const appWindow = getCurrentWindow();
 
@@ -52,22 +113,7 @@ const App: React.FC = () => {
             <span className="logo-text">PiBeat</span>
           </div>
         </div>
-        <div className="theme-switcher">
-          <button
-            className={`theme-option ${theme === 'pibeat' ? 'active' : ''}`}
-            onClick={() => setTheme('pibeat')}
-            title="PiBeat theme"
-          >
-            PiBeat
-          </button>
-          <button
-            className={`theme-option ${theme === 'sonicpi' ? 'active' : ''}`}
-            onClick={() => setTheme('sonicpi')}
-            title="Sonic Pi classic theme"
-          >
-            Sonic Pi
-          </button>
-        </div>
+        <ThemeSwitcher theme={theme} setTheme={setTheme} />
         <Toolbar />
         <div className="titlebar-spacer" data-tauri-drag-region></div>
         <div className="titlebar-controls">
@@ -109,6 +155,7 @@ const App: React.FC = () => {
             <HelpPanel />
             <AgentChat />
             <CuePanel />
+            <UserSamplePanel />
           </div>
         )}
       </div>
