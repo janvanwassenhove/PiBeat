@@ -1387,12 +1387,6 @@ impl VoiceFx {
                         window: get_param(params, "window_size").unwrap_or(0.2),
                     });
                 }
-                "tanh" => {
-                    let amount = get_param(params, "krunch")
-                        .or_else(|| get_param(params, "distort"))
-                        .unwrap_or(0.5);
-                    slots.push(VoiceFxSlot::Distortion { amount });
-                }
                 _ => {}
             }
         }

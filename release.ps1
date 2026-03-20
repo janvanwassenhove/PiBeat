@@ -1,54 +1,49 @@
-# LoveFlix Release Builder (PowerShell version)
+# PiBeat Release Builder (Tauri v2)
 param(
     [Parameter(Mandatory=$false)]
-    [switch]$SkipTests,
-    
+    [switch]$SkipBuild,
+
     [Parameter(Mandatory=$false)]
     [switch]$SkipPush,
-    
+
     [Parameter(Mandatory=$false)]
     [switch]$Help
 )
 
 if ($Help) {
     Write-Host @"
-LoveFlix Release Builder
+PiBeat Release Builder
 
 Usage:
-    .\release.ps1 [-SkipTests] [-SkipPush] [-Help]
+    .\release.ps1 [-SkipBuild] [-SkipPush] [-Help]
 
 Parameters:
-    -SkipTests            : Skip npm test (faster but less safe)
+    -SkipBuild            : Skip local Tauri build (just tag & push)
     -SkipPush             : Don't push to remote repository
     -Help                 : Show this help message
 
 Examples:
     .\release.ps1
     .\release.ps1 -SkipPush
-    .\release.ps1 -SkipTests
+    .\release.ps1 -SkipBuild
 
 What happens:
     1. You'll be prompted for the version number
-    2. Builds locally for your current platform (verifies the build works)
-    3. Creates a git tag (v<version>)
-    4. Pushes tag to GitHub
-    5. GitHub Actions automatically builds BOTH Windows + macOS installers
-    6. A GitHub Release is created with all installers attached
-    7. Existing users get auto-update notifications
+    2. Updates version in package.json, tauri.conf.json, and Cargo.toml
+    3. Optionally builds locally via 'npm run tauri build' (verifies the build works)
+    4. Creates a git tag (v<version>)
+    5. Pushes tag to GitHub
+    6. GitHub Actions automatically builds Windows + macOS + Linux installers
+    7. A GitHub Release is created with all installers attached
 "@
     exit 0
 }
 
 Write-Host ""
 Write-Host "=================================================" -ForegroundColor Cyan
-Write-Host "         LoveFlix Release Builder" -ForegroundColor Cyan
+Write-Host "         PiBeat Release Builder (Tauri v2)" -ForegroundColor Cyan
 Write-Host "=================================================" -ForegroundColor Cyan
 Write-Host ""
-
-# Detect platform
-$isWindows = $PSVersionTable.Platform -eq 'Win32NT' -or $PSVersionTable.PSVersion.Major -le 5 -or [System.Environment]::OSVersion.Platform -eq 'Win32NT'
-$isMacOS = $PSVersionTable.Platform -eq 'Unix' -and $IsMacOS
-$Platform = if ($isWindows) { "Windows" } elseif ($isMacOS) { "macOS" } else { "Linux/Other" }
 
 # Check if we're in a git repository
 try {
@@ -70,14 +65,30 @@ if ($status) {
     exit 1
 }
 
-# Get current version
-$packageJsonPath = "electron-app\package.json"
-if (-not (Test-Path $packageJsonPath)) {
-    Write-Host "ERROR: package.json not found at $packageJsonPath" -ForegroundColor Red
-    Read-Host "Press Enter to exit"
-    exit 1
+# Check required tools
+$requiredTools = @("node", "npm", "cargo", "rustc")
+foreach ($tool in $requiredTools) {
+    if (-not (Get-Command $tool -ErrorAction SilentlyContinue)) {
+        Write-Host "ERROR: '$tool' is not installed or not in PATH!" -ForegroundColor Red
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
 }
 
+# Version files
+$packageJsonPath = "package.json"
+$tauriConfPath = "src-tauri\tauri.conf.json"
+$cargoTomlPath = "src-tauri\Cargo.toml"
+
+foreach ($file in @($packageJsonPath, $tauriConfPath, $cargoTomlPath)) {
+    if (-not (Test-Path $file)) {
+        Write-Host "ERROR: $file not found!" -ForegroundColor Red
+        Read-Host "Press Enter to exit"
+        exit 1
+    }
+}
+
+# Get current version from package.json
 $packageJson = Get-Content $packageJsonPath -Raw | ConvertFrom-Json
 $currentVersion = $packageJson.version
 
@@ -86,7 +97,7 @@ Write-Host ""
 
 # Get new version
 do {
-    $Version = Read-Host "Enter new version (e.g., 1.0.1, 2.0.0)"
+    $Version = Read-Host "Enter new version (e.g., 0.2.0, 1.0.0)"
 } while (-not $Version)
 
 # Validate version format
@@ -96,153 +107,100 @@ if ($Version -notmatch '^[0-9]+\.[0-9]+\.[0-9]+$') {
     exit 1
 }
 
+# Check tag doesn't already exist
+$existingTag = git tag -l "v$Version" 2>$null
+if ($existingTag) {
+    Write-Host "ERROR: Tag v$Version already exists!" -ForegroundColor Red
+    Read-Host "Press Enter to exit"
+    exit 1
+}
+
 Write-Host ""
 Write-Host "Preparing release v$Version..." -ForegroundColor Green
-Write-Host "Target platform: $Platform" -ForegroundColor Green
 Write-Host ""
 
-# Function to restore backus: Windows + macOS (Intel & Apple Silicon)
+# Function to restore backups on failure
 function Restore-BackupFiles {
     Write-Host ""
     Write-Host "=================================================" -ForegroundColor Red
-    Write-Host "ERROR: Build failed! Restoring backup files..." -ForegroundColor Red
+    Write-Host "ERROR: Release failed! Restoring backup files..." -ForegroundColor Red
     Write-Host "=================================================" -ForegroundColor Red
     Write-Host ""
-    
-    if (Test-Path "$packageJsonPath.backup") {
-        Copy-Item "$packageJsonPath.backup" $packageJsonPath -Force
-        Remove-Item "$packageJsonPath.backup" -Force
+
+    foreach ($file in @($packageJsonPath, $tauriConfPath, $cargoTomlPath)) {
+        if (Test-Path "$file.backup") {
+            Copy-Item "$file.backup" $file -Force
+            Remove-Item "$file.backup" -Force
+        }
     }
     Write-Host "Backup files restored. Please fix the issues and try again." -ForegroundColor Yellow
     Read-Host "Press Enter to exit"
     exit 1
 }
 
-# Create backup of version files
-Write-Host "Creating backup of package.json..." -ForegroundColor Yellow
-Copy-Item $packageJsonPath "$packageJsonPath.backup" -Force
+# Create backups
+Write-Host "Creating backups of version files..." -ForegroundColor Yellow
+foreach ($file in @($packageJsonPath, $tauriConfPath, $cargoTomlPath)) {
+    Copy-Item $file "$file.backup" -Force
+}
 
 try {
     # Update version in package.json
-    Write-Host "Updating package.json version..." -ForegroundColor Yellow
+    Write-Host "Updating package.json..." -ForegroundColor Yellow
     $packageJson.version = $Version
     $packageJson | ConvertTo-Json -Depth 10 | Set-Content $packageJsonPath
 
-    Write-Host ""
-    Write-Host "=================================================" -ForegroundColor Cyan
-    Write-Host "Building and testing the application..." -ForegroundColor Cyan
-    Write-Host "=================================================" -ForegroundColor Cyan
-    Write-Host ""
+    # Update version in tauri.conf.json
+    Write-Host "Updating tauri.conf.json..." -ForegroundColor Yellow
+    $tauriConf = Get-Content $tauriConfPath -Raw | ConvertFrom-Json
+    $tauriConf.version = $Version
+    $tauriConf | ConvertTo-Json -Depth 10 | Set-Content $tauriConfPath
 
-    # Navigate to electron-app directory
-    Push-Location "electron-app"
+    # Update version in Cargo.toml
+    Write-Host "Updating Cargo.toml..." -ForegroundColor Yellow
+    $cargoContent = Get-Content $cargoTomlPath -Raw
+    $cargoContent = $cargoContent -replace '(?m)^version\s*=\s*"[^"]*"', "version = `"$Version`""
+    Set-Content $cargoTomlPath $cargoContent -NoNewline
 
-    # Clean previous builds
-    Write-Host "Cleaning previous builds..." -ForegroundColor Yellow
-    if (Test-Path "dist") { Remove-Item "dist" -Recurse -Force }
-    
-    # Clear electron-builder cache on Windows to avoid symlink issues
-    # Then pre-populate the winCodeSign cache manually, ignoring symlink errors
-    # (the symlinks are for macOS darwin libs which are not needed on Windows)
-    if ($isWindows) {
-        $cacheDir = Join-Path $env:LOCALAPPDATA "electron-builder\Cache\winCodeSign"
-        $expectedDir = Join-Path $cacheDir "winCodeSign-2.6.0"
-        
-        if (-not (Test-Path $expectedDir)) {
-            Write-Host "Pre-populating winCodeSign cache (working around Windows symlink restriction)..." -ForegroundColor Yellow
-            
-            # Ensure cache directory exists
-            New-Item -ItemType Directory -Path $cacheDir -Force | Out-Null
-            
-            # Download the archive
-            $archiveUrl = "https://github.com/electron-userland/electron-builder-binaries/releases/download/winCodeSign-2.6.0/winCodeSign-2.6.0.7z"
-            $archivePath = Join-Path $cacheDir "winCodeSign-2.6.0.7z"
-            
-            Write-Host "  Downloading winCodeSign-2.6.0..." -ForegroundColor Gray
-            Invoke-WebRequest -Uri $archiveUrl -OutFile $archivePath -UseBasicParsing
-            
-            # Extract using the bundled 7za.exe, ignoring exit code 2 (symlink errors are harmless)
-            $sevenZip = Join-Path (Get-Location) "node_modules\7zip-bin\win\x64\7za.exe"
-            if (-not (Test-Path $sevenZip)) {
-                # Fallback: try to find any 7za.exe
-                $sevenZip = Get-ChildItem -Path "node_modules" -Filter "7za.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1 -ExpandProperty FullName
-            }
-            
-            if ($sevenZip) {
-                Write-Host "  Extracting (ignoring macOS symlink warnings)..." -ForegroundColor Gray
-                & $sevenZip x -bd -y $archivePath "-o$expectedDir" 2>&1 | Out-Null
-                # Exit code 2 = "sub items errors" (symlinks) - this is fine on Windows
-                if ($LASTEXITCODE -le 2) {
-                    Write-Host "  ✅ winCodeSign cache ready" -ForegroundColor Green
-                } else {
-                    Write-Host "  ⚠ Extraction had issues (exit code: $LASTEXITCODE), build may still work" -ForegroundColor Yellow
-                }
-            } else {
-                Write-Host "  ⚠ Could not find 7za.exe, electron-builder will download winCodeSign itself" -ForegroundColor Yellow
-            }
-            
-            # Clean up the archive
-            Remove-Item $archivePath -Force -ErrorAction SilentlyContinue
-        } else {
-            Write-Host "winCodeSign cache already exists, skipping..." -ForegroundColor Gray
+    # Optional local build
+    if (-not $SkipBuild) {
+        Write-Host ""
+        Write-Host "=================================================" -ForegroundColor Cyan
+        Write-Host "Building Tauri application locally..." -ForegroundColor Cyan
+        Write-Host "=================================================" -ForegroundColor Cyan
+        Write-Host ""
+
+        # Install frontend dependencies
+        Write-Host "Installing frontend dependencies..." -ForegroundColor Yellow
+        npm install
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: npm install failed!" -ForegroundColor Red
+            Restore-BackupFiles
         }
-    }
 
-    # Install/update dependencies
-    Write-Host "Installing dependencies..." -ForegroundColor Yellow
-    npm install
-    if ($LASTEXITCODE -ne 0) {
-        Pop-Location
-        Write-Host "ERROR: npm install failed!" -ForegroundColor Red
-        Restore-BackupFiles
-    }
+        # Build the Tauri app
+        Write-Host "Building Tauri app (this may take a while on first run)..." -ForegroundColor Yellow
+        npm run tauri build
+        if ($LASTEXITCODE -ne 0) {
+            Write-Host "ERROR: Tauri build failed!" -ForegroundColor Red
+            Restore-BackupFiles
+        }
 
-    # Run tests if not skipped
-    if (-not $SkipTests) {
-        Write-Host "Running tests..." -ForegroundColor Yellow
-        # Add npm test here if you have tests configured
-        # npm test
-        # if ($LASTEXITCODE -ne 0) {
-        #     Pop-Location
-        #     Write-Host "ERROR: Tests failed!" -ForegroundColor Red
-        #     Restore-BackupFiles
-        # }
-    }
-
-    # Build the application
-    Write-Host "Building Electron application for current platform (this may take a while)..." -ForegroundColor Yellow
-    
-    # Disable code signing completely to avoid winCodeSign download issues on Windows
-    $env:CSC_IDENTITY_AUTO_DISCOVERY = "false"
-    
-    if ($isWindows) {
-        Write-Host "  - Windows installer (NSIS)" -ForegroundColor Cyan
-        npm run build:win
-    } elseif ($isMacOS) {
-        Write-Host "  - macOS installer (DMG) - Intel & Apple Silicon" -ForegroundColor Cyan
-        npm run build:mac
+        Write-Host ""
+        Write-Host "Local build successful!" -ForegroundColor Green
     } else {
-        Write-Host "  - Building for current platform" -ForegroundColor Cyan
-        npm run build
+        Write-Host "Skipping local build (-SkipBuild)." -ForegroundColor Yellow
     }
-    
-    if ($LASTEXITCODE -ne 0) {
-        Pop-Location
-        Write-Host "ERROR: Electron build failed!" -ForegroundColor Red
-        Restore-BackupFiles
-    }
-    
-    Pop-Location
 
     Write-Host ""
     Write-Host "=================================================" -ForegroundColor Green
-    Write-Host "Build successful! Creating git release..." -ForegroundColor Green
+    Write-Host "Creating git release..." -ForegroundColor Green
     Write-Host "=================================================" -ForegroundColor Green
     Write-Host ""
 
     # Commit version changes
     Write-Host "Committing version changes..." -ForegroundColor Yellow
-    git add $packageJsonPath
+    git add $packageJsonPath $tauriConfPath $cargoTomlPath
     git commit -m "Release v$Version"
     if ($LASTEXITCODE -ne 0) {
         Write-Host "ERROR: Git commit failed!" -ForegroundColor Red
@@ -265,59 +223,56 @@ try {
             Write-Host "Pushing changes..." -ForegroundColor Yellow
             git push origin main
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "WARNING: Failed to push commits, but release was built successfully" -ForegroundColor Yellow
+                Write-Host "WARNING: Failed to push commits, but tag was created locally." -ForegroundColor Yellow
             }
-            
+
             Write-Host "Pushing tag..." -ForegroundColor Yellow
             git push origin "v$Version"
             if ($LASTEXITCODE -ne 0) {
-                Write-Host "WARNING: Failed to push tag, but release was built successfully" -ForegroundColor Yellow
+                Write-Host "WARNING: Failed to push tag." -ForegroundColor Yellow
             }
         }
     }
 
     # Clean up backup files
     Write-Host "Cleaning up backup files..." -ForegroundColor Yellow
-    Remove-Item "$packageJsonPath.backup" -Force -ErrorAction SilentlyContinue
+    foreach ($file in @($packageJsonPath, $tauriConfPath, $cargoTomlPath)) {
+        Remove-Item "$file.backup" -Force -ErrorAction SilentlyContinue
+    }
 
     Write-Host ""
     Write-Host "=================================================" -ForegroundColor Green
     Write-Host "SUCCESS! Release v$Version created!" -ForegroundColor Green
     Write-Host "=================================================" -ForegroundColor Green
     Write-Host ""
-    Write-Host "Build artifacts are located in:" -ForegroundColor Yellow
-    Write-Host "- electron-app\dist\" -ForegroundColor White
-    Write-Host ""
-    Write-Host "Local installer created:" -ForegroundColor Yellow
-    if ($isWindows) {
-        Write-Host "  [Windows] LoveFlix Setup $Version.exe" -ForegroundColor Cyan
-    } elseif ($isMacOS) {
-        Write-Host "  [macOS Intel] LoveFlix-$Version.dmg" -ForegroundColor Cyan
-        Write-Host "  [macOS ARM] LoveFlix-$Version-arm64.dmg" -ForegroundColor Cyan
+
+    if (-not $SkipBuild) {
+        Write-Host "Local build artifacts:" -ForegroundColor Yellow
+        Write-Host "  src-tauri\target\release\bundle\" -ForegroundColor White
+        Write-Host ""
     }
-    Write-Host ""
+
     Write-Host "Git tag created: v$Version" -ForegroundColor Yellow
-    Write-Host "App version updated in package.json" -ForegroundColor Yellow
+    Write-Host "Versions updated in: package.json, tauri.conf.json, Cargo.toml" -ForegroundColor Yellow
     Write-Host ""
-    Write-Host "[OK] Auto-update enabled: Users will be notified of new versions" -ForegroundColor Green
-    Write-Host "     User data (API keys, collections, settings) is preserved" -ForegroundColor Green
-    Write-Host ""
+
     if (-not $SkipPush -and ($pushChoice -eq "y" -or $pushChoice -eq "Y")) {
         Write-Host ">> GitHub Actions will now automatically:" -ForegroundColor Cyan
-        Write-Host "   1. Build Windows installer (.exe)" -ForegroundColor White
-        Write-Host "   2. Build macOS installers (.dmg for Intel + Apple Silicon)" -ForegroundColor White
-        Write-Host "   3. Create GitHub Release with all installers" -ForegroundColor White
+        Write-Host "   1. Build Windows installer (.msi / .exe)" -ForegroundColor White
+        Write-Host "   2. Build macOS installer (.dmg - Universal)" -ForegroundColor White
+        Write-Host "   3. Build Linux packages (.deb / .AppImage)" -ForegroundColor White
+        Write-Host "   4. Create GitHub Release with all installers" -ForegroundColor White
         Write-Host ""
         Write-Host ">> Monitor progress at:" -ForegroundColor Yellow
-        Write-Host "   https://github.com/janvanwassenhove/LoveFlix/actions" -ForegroundColor Cyan
+        Write-Host "   https://github.com/janvanwassenhove/PiBeat/actions" -ForegroundColor Cyan
         Write-Host ""
         Write-Host ">> Release will appear at:" -ForegroundColor Yellow
-        Write-Host "   https://github.com/janvanwassenhove/LoveFlix/releases/tag/v$Version" -ForegroundColor Cyan
+        Write-Host "   https://github.com/janvanwassenhove/PiBeat/releases/tag/v$Version" -ForegroundColor Cyan
     } else {
         Write-Host ">> To trigger multi-platform builds, push the tag:" -ForegroundColor Yellow
         Write-Host "   git push origin main" -ForegroundColor White
         Write-Host "   git push origin v$Version" -ForegroundColor White
-        Write-Host "   GitHub Actions will build Windows + macOS installers automatically" -ForegroundColor Gray
+        Write-Host "   GitHub Actions will build Windows + macOS + Linux installers automatically." -ForegroundColor Gray
     }
     Write-Host ""
 

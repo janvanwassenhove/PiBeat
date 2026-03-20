@@ -3088,3 +3088,218 @@ play :c4
         }
     }
 }
+
+// ============================================================================
+// SECTION: New Effects Parity (bpf, tremolo, ping_pong, level, mono, etc.)
+// ============================================================================
+
+#[test]
+fn parity_fx_bpf_parses() {
+    let code = "with_fx :bpf, centre: 80, res: 0.5 do\n  play :c4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "bpf should produce FxStart");
+    assert_eq!(note_count(&evts), 1);
+}
+
+#[test]
+fn parity_fx_rbpf_parses() {
+    let code = "with_fx :rbpf, centre: 90, res: 0.8 do\n  play :c4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "rbpf should produce FxStart");
+}
+
+#[test]
+fn parity_fx_nbpf_parses() {
+    let code = "with_fx :nbpf, centre: 70, res: 0.3 do\n  sample :kick\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "nbpf should produce FxStart");
+    assert_eq!(sample_count(&evts), 1);
+}
+
+#[test]
+fn parity_fx_nrbpf_parses() {
+    let code = "with_fx :nrbpf, centre: 85, res: 0.6 do\n  play :e4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "nrbpf should produce FxStart");
+}
+
+#[test]
+fn parity_fx_tremolo_parses() {
+    let code = "with_fx :tremolo, rate: 4, depth: 0.7, wave: 2 do\n  play :c4, sustain: 2\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "tremolo should produce FxStart");
+    assert_eq!(note_count(&evts), 1);
+}
+
+#[test]
+fn parity_fx_ping_pong_parses() {
+    let code = "with_fx :ping_pong, phase: 0.25, feedback: 0.5 do\n  play :c4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "ping_pong should produce FxStart");
+}
+
+#[test]
+fn parity_fx_level_parses() {
+    let code = "with_fx :level, amp: 0.3 do\n  play :c4\n  play :e4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "level should produce FxStart");
+    assert_eq!(note_count(&evts), 2);
+}
+
+#[test]
+fn parity_fx_mono_parses() {
+    let code = "with_fx :mono do\n  play :c4, pan: -0.8\n  play :e4, pan: 0.8\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "mono should produce FxStart");
+    assert_eq!(note_count(&evts), 2);
+}
+
+#[test]
+fn parity_fx_band_eq_parses() {
+    let code = "with_fx :band_eq, freq: 2000, db: 12, res: 0.5 do\n  play :c4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "band_eq should produce FxStart");
+}
+
+#[test]
+fn parity_fx_pitch_shift_parses() {
+    let code = "with_fx :pitch_shift, shift: 7 do\n  play :c4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "pitch_shift should produce FxStart");
+}
+
+#[test]
+fn parity_fx_whammy_parses() {
+    let code = "with_fx :whammy, transpose: 12 do\n  play :c4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "whammy should produce FxStart");
+}
+
+#[test]
+fn parity_fx_tanh_parses() {
+    let code = "with_fx :tanh, krunch: 0.7 do\n  play :c4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "tanh should produce FxStart");
+}
+
+#[test]
+fn parity_fx_nrlpf_parses() {
+    let code = "with_fx :nrlpf, cutoff: 80, res: 0.5 do\n  play :c4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "nrlpf should produce FxStart");
+}
+
+#[test]
+fn parity_fx_nrhpf_parses() {
+    let code = "with_fx :nrhpf, cutoff: 60, res: 0.3 do\n  play :c4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert!(fx_start_count(&evts) >= 1, "nrhpf should produce FxStart");
+}
+
+// ============================================================================
+// SECTION: New BPM Commands (use_bpm_mul, with_bpm_mul)
+// ============================================================================
+
+#[test]
+fn parity_use_bpm_mul_doubles() {
+    let code = "use_bpm 100\nuse_bpm_mul 2\nplay :c4\nsleep 1";
+    let evts = events(code, DEFAULT_BPM);
+    let bpms: Vec<f32> = evts.iter()
+        .filter_map(|(_, c)| if let AudioCommand::SetBpm(b) = c { Some(*b) } else { None })
+        .collect();
+    assert!(bpms.contains(&100.0));
+    assert!(bpms.contains(&200.0), "use_bpm_mul 2 should double BPM to 200");
+}
+
+#[test]
+fn parity_use_bpm_mul_half() {
+    let code = "use_bpm 120\nuse_bpm_mul 0.5\nplay :c4";
+    let evts = events(code, DEFAULT_BPM);
+    let bpms: Vec<f32> = evts.iter()
+        .filter_map(|(_, c)| if let AudioCommand::SetBpm(b) = c { Some(*b) } else { None })
+        .collect();
+    assert!(bpms.contains(&60.0), "use_bpm_mul 0.5 on BPM 120 should give BPM 60");
+}
+
+#[test]
+fn parity_with_bpm_mul_scoped() {
+    let code = "use_bpm 120\nwith_bpm_mul 0.5 do\n  play :c4\n  sleep 1\nend\nplay :e4";
+    let evts = events(code, DEFAULT_BPM);
+    let bpms: Vec<f32> = evts.iter()
+        .filter_map(|(_, c)| if let AudioCommand::SetBpm(b) = c { Some(*b) } else { None })
+        .collect();
+    assert!(bpms.contains(&60.0), "inside with_bpm_mul BPM should be 60");
+    assert!(bpms.contains(&120.0), "BPM should be restored after with_bpm_mul");
+    assert_eq!(note_count(&evts), 2);
+}
+
+#[test]
+fn parity_with_bpm_mul_timing() {
+    // with_bpm_mul 0.5 halves BPM from 120→60: sleep 1 at 60bpm = 1.0s
+    let code = "use_bpm 120\nwith_bpm_mul 0.5 do\n  play :c4\n  sleep 1\n  play :e4\nend";
+    let evts = events(code, DEFAULT_BPM);
+    let notes: Vec<f32> = evts.iter()
+        .filter_map(|(t, c)| if let AudioCommand::PlayNote { .. } = c { Some(*t) } else { None })
+        .collect();
+    assert_eq!(notes.len(), 2);
+    let gap = notes[1] - notes[0];
+    assert!((gap - 1.0).abs() < 0.05, "sleep 1 at BPM 60 should be ~1.0s, got {}", gap);
+}
+
+// ============================================================================
+// SECTION: with_swing — block contents preserved
+// ============================================================================
+
+#[test]
+fn parity_with_swing_block_produces_notes() {
+    let code = "with_swing 0.1 do\n  play :c4\n  sleep 0.5\n  play :e4\n  sleep 0.5\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert_eq!(note_count(&evts), 2, "with_swing block should produce notes");
+}
+
+#[test]
+fn parity_with_swing_nested_loops() {
+    let code = "with_swing 0.1 do\n  3.times do\n    sample :kick\n    sleep 0.5\n  end\nend";
+    let evts = events(code, DEFAULT_BPM);
+    assert_eq!(sample_count(&evts), 3, "with_swing with nested 3.times should produce 3 samples");
+}
+
+// ============================================================================
+// SECTION: All new FX types produce audible events
+// ============================================================================
+
+#[test]
+fn parity_all_new_fx_produce_notes() {
+    let fxs = vec![
+        ("bpf", "centre: 80"),
+        ("rbpf", "centre: 90, res: 0.5"),
+        ("nbpf", "centre: 70"),
+        ("nrbpf", "centre: 85, res: 0.4"),
+        ("tremolo", "rate: 4, depth: 0.5"),
+        ("ping_pong", "phase: 0.25, feedback: 0.5"),
+        ("level", "amp: 0.5"),
+        ("mono", ""),
+        ("band_eq", "freq: 1000, db: 6"),
+        ("pitch_shift", "shift: 7"),
+        ("whammy", "transpose: 12"),
+        ("tanh", "krunch: 0.5"),
+        ("nrlpf", "cutoff: 80"),
+        ("nrhpf", "cutoff: 60"),
+    ];
+    for (fx, params) in &fxs {
+        let code = if params.is_empty() {
+            format!("with_fx :{} do\n  play :c4\n  sleep 1\nend", fx)
+        } else {
+            format!("with_fx :{}, {} do\n  play :c4\n  sleep 1\nend", fx, params)
+        };
+        let evts = events(&code, DEFAULT_BPM);
+        assert!(
+            fx_start_count(&evts) >= 1,
+            "FX '{}' should produce FxStart event", fx
+        );
+        assert!(
+            note_count(&evts) >= 1,
+            "FX '{}' should still produce PlayNote events", fx
+        );
+    }
+}

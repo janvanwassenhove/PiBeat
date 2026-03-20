@@ -11,6 +11,8 @@
 | `sleep` | ✅ | Numeric and variable |
 | `use_synth` | ✅ | All standard synths |
 | `use_bpm` | ✅ | |
+| `use_bpm_mul` | ✅ | Multiplies current BPM |
+| `with_bpm_mul N do...end` | ✅ | Scoped BPM multiplication with save/restore |
 | `with_fx` | ✅ | Nested supported, scoped save/restore |
 | `live_loop` | ✅ | Max 500 iterations |
 | `in_thread` | ✅ | **Fixed: variable scoping** |
@@ -28,6 +30,7 @@
 | `time_warp` | ✅ | Schedule at relative offset, non-clock-advancing |
 | `choose` | ✅ | Random element from array |
 | `ring` / `spread` | ✅ | Ring buffers and Euclidean rhythms |
+| `with_swing` | ⚠️ | Block contents execute; swing timing not applied |
 
 ## Runtime Semantics
 
@@ -83,6 +86,17 @@
 | `:bitcrusher` / `:krush` | ✅ | Sonic Pi defaults (bits=10, sr=10000), krush→bitcrusher routing |
 | `:compressor` | ✅ | |
 | `:normaliser` | ✅ | |
+| `:bpf` / `:rbpf` | ✅ | Band-pass filter with MIDI→Hz cutoff, resonance |
+| `:nbpf` / `:nrbpf` | ✅ | Normalised band-pass filter variants |
+| `:nrlpf` / `:nrhpf` | ✅ | Normalised resonant low/high-pass filter variants |
+| `:tremolo` | ✅ | LFO amplitude modulation (4 wave types: sine/saw/square/triangle) |
+| `:ping_pong` | ✅ | Stereo ping-pong delay, BPM-synced phase |
+| `:level` | ✅ | Simple gain/amplitude adjustment |
+| `:mono` | ✅ | Forces mono output (pan override to center) |
+| `:band_eq` | ✅ | Parametric EQ with freq/db/res |
+| `:pitch_shift` | ✅ | Pitch shifting via rate adjustment (approximation) |
+| `:whammy` | ✅ | Pitch transposition via rate adjustment (approximation) |
+| `:tanh` | ✅ | Tanh distortion (krunch parameter) |
 
 ## Sample Features Status
 
@@ -118,12 +132,12 @@
 
 | Metric | Count |
 |--------|-------|
-| Library unit tests | 48 |
+| Library unit tests | 50 |
 | Audio comparison tests | 8 |
 | Example parsing tests | 13 |
-| Fidelity snapshot tests | 57 |
-| Parity validation tests | 169 |
-| **Total** | **296** |
+| Fidelity snapshot tests | 72 |
+| Parity validation tests | 190 |
+| **Total** | **334** |
 
 ## Known Gaps
 

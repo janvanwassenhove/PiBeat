@@ -41,7 +41,7 @@ Ensure the parser and event-stream output match Sonic Pi behavior for the suppor
 |---------|--------|-------|
 | OSC bundle timestamps | ⬜ Todo | SC events use /s_new, no bundle timestamps |
 | SynthDef envelope curves | ⬜ Todo | All `\lin` → should be exponential for release |
-| `with_fx` on cpal engine | ✅ Done | Per-voice VoiceFx chain (14 FX types) |
+| `with_fx` on cpal engine | ✅ Done | Per-voice VoiceFx chain (33 FX types) |
 | `with_synth` block scoping | ✅ Done | Saves/restores current_synth |
 | `use_synth_defaults` | ✅ Done | `parse_defaults_line()` + `ctx.synth_defaults` |
 | Sample `beat_stretch:` | ✅ Done | Rate adjusted by sample duration/BPM |
@@ -57,7 +57,9 @@ Ensure the parser and event-stream output match Sonic Pi behavior for the suppor
 | `at` blocks | ✅ Done | Implemented |
 | `choose()` for arrays | ✅ Done | Random selection works |
 | Ring `.tick`/`.look` cycling | ✅ Done | Deterministic counter-based, LCM for multi-ring |
-| `use_bpm_mul` | ⬜ Todo | |
+| `use_bpm_mul` | ✅ Done | Multiplies current BPM |
+| `with_bpm_mul N do...end` | ✅ Done | Scoped BPM multiplication with save/restore |
+| `with_swing N do...end` | ⚠️ Partial | Block contents execute; swing timing not applied |
 | Multiple octave notation | ⬜ Todo | e.g., `:c` without octave |
 | `control` command | ⬜ Todo | Recognized but no-op (warning logged) |
 | `Time.now` access | ❌ N/A | Ruby runtime feature, not supportable |
@@ -70,7 +72,7 @@ Ensure the parser and event-stream output match Sonic Pi behavior for the suppor
 | Component | Status | Notes |
 |-----------|--------|-------|
 | Fidelity fixtures (40+ .rb files) | ✅ Done | `fidelity/fixtures/` |
-| Event-stream snapshot tests | ✅ Done | 50 Rust integration tests |
+| Event-stream snapshot tests | ✅ Done | 72 Rust integration tests |
 | JSON event-stream exports | ✅ Done | `fidelity/event_stream/*.json` |
 | Audio comparison harness | ✅ Done | RMS, spectral, onset, silence metrics |
 | Reference WAV import mode | ✅ Ready | Place in `fidelity/renders/reference/` |
@@ -78,7 +80,7 @@ Ensure the parser and event-stream output match Sonic Pi behavior for the suppor
 | CI integration | ⬜ Todo | Run fidelity suite in CI |
 
 ## Definition of Done
-- [x] `cargo test` all green (113+ tests)
+- [x] `cargo test` all green (334+ tests)
 - [x] Fidelity test fixtures exist for all supported features
 - [x] Event-stream snapshot tests verify parser output
 - [x] Audio comparison harness exists and self-tests pass
