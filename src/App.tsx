@@ -1,6 +1,7 @@
-﻿import React, { useEffect, useState, useRef } from "react";
+﻿import React, { useEffect, useState, useRef, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { openUrl } from "@tauri-apps/plugin-opener";
 import Toolbar from "./components/Toolbar";
 import BufferTabs from "./components/BufferTabs";
 import CodeEditor from "./components/CodeEditor";
@@ -77,8 +78,50 @@ const ThemeSwitcher: React.FC<{ theme: AppTheme; setTheme: (t: AppTheme) => void
   );
 };
 
+const AboutModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => {
+  const ref = useRef<HTMLDivElement>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    const handler = (e: KeyboardEvent) => { if (e.key === 'Escape') onClose(); };
+    window.addEventListener('keydown', handler);
+    return () => window.removeEventListener('keydown', handler);
+  }, [open, onClose]);
+
+  const handleLink = useCallback((url: string) => (e: React.MouseEvent) => {
+    e.preventDefault();
+    openUrl(url);
+  }, []);
+
+  if (!open) return null;
+
+  return (
+    <div className="about-overlay" onClick={onClose}>
+      <div className="about-modal" ref={ref} onClick={(e) => e.stopPropagation()}>
+        <div className="about-logo">
+          <span className="about-logo-icon">&#9835;</span>
+          <span className="about-logo-text">PiBeat</span>
+        </div>
+        <div className="about-version">Version 0.1.0</div>
+        <p className="about-description">
+          A desktop music live-coding application inspired by Sonic Pi.
+          Write code, make music, in real time.
+        </p>
+        <div className="about-links">
+          <a href="https://mityjohn.com/" onClick={handleLink('https://mityjohn.com/')}>mityjohn.com</a>
+          <span className="about-separator">·</span>
+          <a href="https://github.com/janvanwassenhove/PiBeat" onClick={handleLink('https://github.com/janvanwassenhove/PiBeat')}>GitHub</a>
+        </div>
+        <div className="about-copyright">© 2025–2026 Jan Van Wassenhove</div>
+        <button className="about-close-btn" onClick={onClose}>Close</button>
+      </div>
+    </div>
+  );
+};
+
 const App: React.FC = () => {
   const { fetchSamples, fetchStatus, loadUserSamplesDir, showSampleBrowser, showSynthBrowser, showEffectsPanel, showHelp, showAgentChat, showCuePanel, showUserSamplePanel, showBandVisualizer, detachedPanels, viewMode, theme, setTheme } = useStore();
+  const [showAbout, setShowAbout] = useState(false);
 
   useEffect(() => {
     fetchSamples();
@@ -220,7 +263,7 @@ const App: React.FC = () => {
     <div className="app">
       <div className="app-header">
         <div className="titlebar-left" data-tauri-drag-region>
-          <div className="app-logo">
+          <div className="app-logo" onClick={() => setShowAbout(true)} title="About PiBeat">
             <span className="logo-icon">&#9835;</span>
             <span className="logo-text">PiBeat</span>
           </div>
@@ -277,6 +320,8 @@ const App: React.FC = () => {
           <kbd>Ctrl+Enter</kbd> Run | <kbd>Alt+S</kbd> Stop | <kbd>Ctrl+Shift+R</kbd> Record | <kbd>Ctrl+S</kbd> Save | <kbd>Ctrl+O</kbd> Open
         </span>
       </div>
+
+      <AboutModal open={showAbout} onClose={() => setShowAbout(false)} />
     </div>
   );
 };
