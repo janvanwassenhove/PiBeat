@@ -1,8 +1,8 @@
 /**
- * LLM Integration — Reactive agent with OpenAI and Anthropic support
+ * LLM Integration — Reactive agent with OpenAI, Anthropic, and Google Gemini support
  * 
  * This module provides:
- * - Multi-provider LLM support (OpenAI, Anthropic)
+ * - Multi-provider LLM support (OpenAI, Anthropic, Google Gemini)
  * - Reactive agent pattern with reflection and multi-turn reasoning
  * - Sonic Pi knowledge injection as system context
  * - Fallback to local pattern-matching when no API key available
@@ -10,6 +10,7 @@
 
 import OpenAI from 'openai';
 import Anthropic from '@anthropic-ai/sdk';
+import { GoogleGenAI } from '@google/genai';
 import { invoke } from '@tauri-apps/api/core';
 import { AgentMessage } from './store';
 
@@ -17,7 +18,7 @@ import { AgentMessage } from './store';
 // Types
 // ──────────────────────────────────────────────
 
-export type LLMProvider = 'openai' | 'anthropic' | 'local';
+export type LLMProvider = 'openai' | 'anthropic' | 'gemini' | 'local';
 export type ModelId = 
   | 'gpt-5.2' 
   | 'gpt-5-mini'
@@ -27,6 +28,9 @@ export type ModelId =
   | 'claude-sonnet-4.5'
   | 'claude-3-5-sonnet-20241022'
   | 'claude-3-5-haiku-20241022'
+  | 'gemini-3.1-pro'
+  | 'gemini-3-flash'
+  | 'gemini-3.1-flash-lite'
   | 'local-rules';
 
 export interface LLMConfig {
@@ -69,6 +73,11 @@ export const AVAILABLE_MODELS: Record<LLMProvider, { id: ModelId; name: string }
     { id: 'claude-sonnet-4.5', name: 'Claude Sonnet 4.5 (Latest & Best)' },
     { id: 'claude-3-5-sonnet-20241022', name: 'Claude 3.5 Sonnet (Legacy)' },
     { id: 'claude-3-5-haiku-20241022', name: 'Claude 3.5 Haiku (Fast)' },
+  ],
+  gemini: [
+    { id: 'gemini-3.1-pro', name: 'Gemini 3.1 Pro (Latest & Best)' },
+    { id: 'gemini-3-flash', name: 'Gemini 3 Flash (Fast & Smart)' },
+    { id: 'gemini-3.1-flash-lite', name: 'Gemini 3.1 Flash Lite (Ultra Fast)' },
   ],
   local: [
     { id: 'local-rules', name: 'Local (Rule-based, No API)' },
@@ -193,6 +202,179 @@ When generating code:
 9. **Use sensible \`amp\` values** — 0.3-0.8 for most elements
 10. **Add comments** to explain patterns
 
+## Song Structure Generation
+
+You can generate complete song structures with multiple sections. When creating intros, verses, choruses, drops, bridges, buildups, or outros:
+
+### Intro Patterns (4-8 bars, ease into the track)
+\`\`\`ruby
+## ---- INTRO (8 beats) ---- ##
+live_loop :intro_pad do
+  use_synth :blade
+  with_fx :lpf, cutoff: 70 do
+    play chord(:c4, :minor7), amp: 0.2, attack: 2, release: 2
+  end
+  sleep 4
+  stop  # Stop after one iteration
+end
+
+live_loop :intro_perc do
+  8.times do
+    sample :perc_snap, amp: 0.3
+    sleep 0.5
+  end
+  stop
+end
+\`\`\`
+
+### Fade-In Technique
+\`\`\`ruby
+# Fade in over 8 beats using amp ramp
+live_loop :fade_in_synth do
+  tick
+  amp_val = [0.0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8].ring.look
+  play :c4, amp: amp_val, release: 0.8
+  sleep 1
+  stop if look > 8
+end
+\`\`\`
+
+### Verse Pattern (16 bars, main groove established)
+\`\`\`ruby
+## ---- VERSE ---- ##
+live_loop :verse_drums do
+  sample :kick
+  sleep 0.5
+  sample :hihat, amp: 0.5
+  sleep 0.5
+  sample :snare
+  sleep 0.5
+  sample :hihat, amp: 0.5
+  sleep 0.5
+end
+
+live_loop :verse_bass do
+  use_synth :tb303
+  notes = ring(:c2, :c2, :eb2, :f2)
+  play notes.tick, cutoff: 80, release: 0.3
+  sleep 0.5
+end
+\`\`\`
+
+### Buildup Pattern (builds tension before drop)
+\`\`\`ruby
+## ---- BUILDUP ---- ##
+live_loop :buildup do
+  with_fx :echo, phase: 0.125, decay: 0.5 do
+    16.times do |i|
+      sample :drum_snare_soft, amp: 0.5 + (i * 0.1)
+      sleep 0.25 - (i * 0.01)  # Accelerating
+    end
+  end
+  stop
+end
+\`\`\`
+
+### Drop Pattern (high energy, full arrangement)
+\`\`\`ruby
+## ---- DROP ---- ##
+live_loop :drop_drums do
+  sample :bd_haus, amp: 1.2
+  sample :perc_snap, amp: 0.8
+  sleep 0.5
+  sample :hihat, amp: 0.6
+  sleep 0.25
+  sample :hihat, amp: 0.4
+  sleep 0.25
+  sample :sn_dub, amp: 1
+  sleep 0.5
+  sample :hihat, amp: 0.6
+  sleep 0.25
+  sample :hihat, amp: 0.4
+  sleep 0.25
+end
+\`\`\`
+
+### Bridge Pattern (contrasting section)
+\`\`\`ruby
+## ---- BRIDGE ---- ##
+live_loop :bridge_pad do
+  use_synth :prophet
+  with_fx :reverb, room: 0.9, mix: 0.6 do
+    play chord(:ab3, :minor7), amp: 0.3, attack: 1, sustain: 2, release: 2
+    sleep 4
+    play chord(:eb3, :major7), amp: 0.3, attack: 1, sustain: 2, release: 2
+    sleep 4
+  end
+end
+
+live_loop :bridge_arp do
+  use_synth :pluck
+  notes = ring(:ab4, :c5, :eb5, :g5, :ab5)
+  play notes.tick, amp: 0.4
+  sleep 0.5
+end
+\`\`\`
+
+### Chorus Pattern (memorable hook)
+\`\`\`ruby
+## ---- CHORUS ---- ##
+live_loop :chorus_chords do
+  use_synth :super_saw
+  with_fx :reverb, mix: 0.4 do
+    play chord(:c4, :minor), amp: 0.5, release: 1
+    sleep 2
+    play chord(:ab3, :major), amp: 0.5, release: 1
+    sleep 2
+    play chord(:eb4, :major), amp: 0.5, release: 1
+    sleep 2
+    play chord(:bb3, :major), amp: 0.5, release: 1
+    sleep 2
+  end
+end
+\`\`\`
+
+### Outro / Fade-Out Pattern
+\`\`\`ruby
+## ---- OUTRO ---- ##
+live_loop :outro do
+  tick
+  amp_val = [0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05].ring.look
+  use_synth :blade
+  with_fx :reverb, mix: 0.7 + (look * 0.03) do
+    play chord(:c4, :minor7), amp: amp_val, release: 2
+  end
+  sleep 2
+  stop if look > 8
+end
+\`\`\`
+
+### Working with User's Existing Code
+When the user has code in their buffer:
+1. **Analyze their style** — match their BPM, key, synth choices
+2. **Identify live loops** — understand their track structure
+3. **Generate compatible sections** — new code should blend with existing
+4. **Preserve their patterns** — don't replace unless asked
+5. **Suggest additions** — intro based on their verse, drop based on their melody
+6. **Match their aesthetic** — electronic, ambient, acoustic as appropriate
+
+**CRITICAL:** When the user asks to "add an intro", "create an outro for my track", or similar:
+- **Read their current code carefully** — identify BPM, key (from chord/scale usage), synth choices
+- **Extract the mood** — is it dark, upbeat, ambient, aggressive?
+- **Match the samples** — if they use :bd_haus, use it in your additions
+- **Stay in the same key** — don't introduce clashing notes
+- **Complement, don't duplicate** — add new elements that enhance their existing loops
+
+Example: If user's code has:
+\`\`\`ruby
+use_bpm 128
+live_loop :drums do
+  sample :bd_haus
+  sleep 0.5
+end
+\`\`\`
+Your intro should use \`use_bpm 128\`, use \`:bd_haus\` or similar samples, and prepare the listener for that groove.
+
 ## Refactoring Principles
 When improving code:
 - Extract repeated patterns into \`define\` functions
@@ -205,9 +387,20 @@ When improving code:
 
 ## Response Format
 When the user asks you to generate code:
+- **Always match their BPM** if they have one set, or add \`use_bpm\` if they don't
+- **Identify their key/scale** from chord() and scale() calls, stay in that key
 - Provide complete, runnable code wrapped in \`\`\`ruby code blocks
-- Explain what the code does briefly
+- **Use section comments** like \`## ---- INTRO ---- ##\` for clarity
+- Explain what the code does and how it relates to their existing code
 - Suggest variations or parameters they can tweak
+
+When generating song sections:
+- **Intro**: Start sparse, use filters (lpf with low cutoff), build gradually
+- **Verse**: Establish groove but leave room for the chorus
+- **Buildup**: Increase energy, snare rolls, filter sweeps, risers
+- **Drop/Chorus**: Full arrangement, maximum energy and density
+- **Bridge**: Contrast — different chords, sparser arrangement
+- **Outro**: Fade elements, increase reverb, dissolve to silence
 
 When refactoring:
 - Show the refactored code
@@ -224,6 +417,59 @@ The user can:
 - Ask you to analyze their current buffer
 - Request explanations, refactorings, or new code snippets
 - Insert your code suggestions into their buffer or replace the entire buffer
+- Ask for **parity checks** — analyze if their code will sound identical to Sonic Pi
+- Request **parity fixes** — auto-apply workarounds for unsupported features
+
+## Sonic Pi Sound Parity Knowledge
+
+You have deep knowledge of PiBeat's implementation vs the original Sonic Pi IDE. Use this when users ask about compatibility, sound differences, or parity.
+
+### Fully Supported (100% parity):
+- **42 synth types**: sine, saw, square, triangle, noise, pulse, super_saw, tb303, prophet, blade, pluck, fm, beep, dark_ambience, hollow, growl, pretty_bell, dull_bell, chip_lead, chip_bass, chip_noise, tech_saws, hoover, zawa, mod_fm, mod_sine, mod_saw, mod_tri, mod_pulse, dsaw, dpulse, dtri, sub_pulse, gabber_kick, piano, bnoise, pnoise, gnoise, cnoise
+- **22 effect types**: reverb, gverb, echo, delay, distortion, lpf, rlpf, hpf, rhpf, flanger, chorus, ring_mod, wobble, ixi_techno, octaver, pan, slicer, bitcrusher, krush, compressor, normaliser, normalizer
+- **Sample parameters**: amp, rate, pan, pitch/rpitch, sustain, beat_stretch, start, finish, lpf, hpf, attack/decay/sustain_level/release (ADSR)
+- **Language constructs**: live_loop, in_thread, .times do, while, loop, define, set/get, if/else/elsif, ring, spread, choose, rrand, rrand_i, rand, rand_i, dice, one_in, at, time_warp, use_bpm, use_synth
+
+### Partial Support (workarounds exist):
+- **sync/cue**: Parsed and logged but threads start immediately. Workaround: use separate \`live_loop\` blocks
+- **control**: Parsed but no-op. Workaround: use explicit \`play\` + \`sleep\` sequences
+- **sync: param on live_loop**: Parsed but not enforced
+- **.tick/.look**: Uses deterministic counter-based cycling (close but not identical to Sonic Pi's thread-local counters)
+
+### Not Supported (avoid these):
+- **Ruby runtime**: should_stop?, Time.now, lambda, proc, def methods
+- **Effects**: pitch_shift, whammy, band_eq, tanh, vowel
+- **Live code reload**: Code changes require stop/start cycle
+
+### Effect Default Values (match Sonic Pi v4.x):
+| Effect | Defaults |
+|--------|----------|
+| reverb | mix=0.4, room=0.6, damp=0.5 |
+| echo/delay | phase=0.25 beats, decay=2, mix=1 |
+| distortion | distort=0.5, mix=1 |
+| lpf/rlpf | cutoff=100 MIDI, res=0 |
+| hpf/rhpf | cutoff=60 MIDI, res=0 |
+| bitcrusher/krush | bits=10, sr=10000, mix=1 |
+| flanger | rate=0.5, depth=0.5, feedback=0.5, mix=1 |
+| chorus | rate=0.3, depth=0.5, mix=1 |
+| ring_mod | freq=30, mix=1 |
+| wobble | rate=1, depth=0.5, mix=1 |
+| slicer | phase=0.25, mix=1, wave=0 |
+
+### Audio Engine Details:
+- **Sample rate**: 44.1 kHz stereo
+- **Polyphony**: 128 voices
+- **Panning**: Equal-power cosine-law (matches Sonic Pi Pan2)
+- **Envelope**: ADSR with minimum 1ms release click protection
+- **Filter**: Biquad with MIDI→Hz conversion (cutoff ≤ 130 treated as MIDI)
+- **Timing**: High-precision scheduler with sub-millisecond accuracy
+
+When checking parity, always:
+1. Identify ALL features used (synths, effects, samples, language constructs)
+2. Check each against the supported/partial/unsupported lists above
+3. Provide specific workarounds for any partial/unsupported features
+4. Generate replacement code that uses only fully supported features
+5. Verify effect parameters match Sonic Pi defaults
 
 Be concise, helpful, and focused on making great music!`;
 
@@ -233,6 +479,8 @@ Be concise, helpful, and focused on making great music!`;
 
 let openaiClient: OpenAI | null = null;
 let anthropicClient: Anthropic | null = null;
+let geminiClient: GoogleGenAI | null = null;
+let geminiClientApiKey: string | null = null;
 
 function getOpenAIClient(apiKey: string): OpenAI {
   if (!openaiClient || openaiClient.apiKey !== apiKey) {
@@ -246,6 +494,14 @@ function getAnthropicClient(apiKey: string): Anthropic {
     anthropicClient = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
   }
   return anthropicClient;
+}
+
+function getGeminiClient(apiKey: string): GoogleGenAI {
+  if (!geminiClient || geminiClientApiKey !== apiKey) {
+    geminiClient = new GoogleGenAI({ apiKey });
+    geminiClientApiKey = apiKey;
+  }
+  return geminiClient;
 }
 
 // ──────────────────────────────────────────────
@@ -287,7 +543,7 @@ export async function reactiveAgentProcess(
   // Check for API key from all sources if not provided or empty
   let apiKey = config.apiKey && config.apiKey.trim() ? config.apiKey.trim() : undefined;
   
-  if (!apiKey && (config.provider === 'openai' || config.provider === 'anthropic')) {
+  if (!apiKey && (config.provider === 'openai' || config.provider === 'anthropic' || config.provider === 'gemini')) {
     console.log(`[LLM] No API key in config, checking environment/storage for ${config.provider}...`);
     const envApiKey = await getApiKey(config.provider);
     apiKey = envApiKey && envApiKey.trim() ? envApiKey.trim() : undefined;
@@ -435,6 +691,8 @@ async function callLLMWithRetry(
         return await callOpenAI(config, messages);
       } else if (config.provider === 'anthropic') {
         return await callAnthropic(config, messages);
+      } else if (config.provider === 'gemini') {
+        return await callGemini(config, messages);
       }
 
       throw new Error(`Unsupported provider: ${config.provider}`);
@@ -601,10 +859,18 @@ function buildMessages(
 }
 
 function buildUserPrompt(userMessage: string, currentCode: string): string {
-  if (currentCode.trim().length > 10) {
-    return `${userMessage}\n\n[Current buffer code]:\n\`\`\`ruby\n${currentCode}\n\`\`\``;
+  let prompt = userMessage;
+
+  // Inject parity analysis context for parity-related requests
+  const isParityRequest = /parity|compat|sound.*match|sonic.*pi.*match|identical.*sonic|fidelity/i.test(userMessage);
+  if (isParityRequest && currentCode.trim().length > 10) {
+    prompt += '\n\n**IMPORTANT: This is a parity analysis request.** Analyze EVERY feature in the code below against PiBeat\'s supported feature list. Report:\n1. Each synth used and its parity status\n2. Each effect used and its parity status with default parameter values\n3. Any unsupported language constructs\n4. Specific workarounds for every issue found\n5. A corrected version of the code if any issues exist';
   }
-  return userMessage;
+
+  if (currentCode.trim().length > 10) {
+    return `${prompt}\n\n[Current buffer code]:\n\`\`\`ruby\n${currentCode}\n\`\`\``;
+  }
+  return prompt;
 }
 
 /**
@@ -766,6 +1032,74 @@ async function callAnthropic(
 }
 
 /**
+ * Google Gemini API call
+ */
+async function callGemini(
+  config: LLMConfig,
+  messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
+): Promise<LLMResponse> {
+  const client = getGeminiClient(config.apiKey!);
+
+  // Extract system instruction and chat messages
+  const systemMessage = messages.find(m => m.role === 'system')?.content || '';
+  const chatMessages = messages.filter(m => m.role !== 'system');
+
+  // Build Gemini contents array — Gemini uses 'user' and 'model' roles
+  const contents = chatMessages.map(m => ({
+    role: m.role === 'assistant' ? 'model' as const : 'user' as const,
+    parts: [{ text: m.content }],
+  }));
+
+  console.log(`[callGemini] Calling with model: ${config.model}`);
+
+  try {
+    const response = await client.models.generateContent({
+      model: config.model,
+      contents,
+      config: {
+        systemInstruction: systemMessage,
+        maxOutputTokens: 8192,
+        temperature: 1.0,
+      },
+    });
+
+    console.log('[callGemini] Response received:', {
+      hasText: !!response.text,
+      textLength: response.text?.length || 0,
+      finishReason: response.candidates?.[0]?.finishReason,
+    });
+
+    const content = response.text || '';
+    const finishReason = response.candidates?.[0]?.finishReason;
+    const truncated = finishReason === 'MAX_TOKENS';
+
+    if (!content || content.trim() === '') {
+      console.error('[callGemini] No text content in response:', response);
+      throw new Error('Gemini returned empty response');
+    }
+
+    if (truncated) {
+      console.warn('[callGemini] Response was truncated at token limit, will continue in next call');
+    }
+
+    const usage = response.usageMetadata;
+    return {
+      content,
+      truncated,
+      finishReason: finishReason || undefined,
+      usage: {
+        promptTokens: usage?.promptTokenCount || 0,
+        completionTokens: usage?.candidatesTokenCount || 0,
+        totalTokens: usage?.totalTokenCount || 0,
+      },
+    };
+  } catch (error: any) {
+    console.error('[callGemini] Error:', error);
+    throw error;
+  }
+}
+
+/**
  * Reflection — Agent evaluates its own response and decides if it needs improvement
  * Enhanced with better quality checks
  */
@@ -874,12 +1208,17 @@ async function reflectOnResponse(
 /**
  * Get API key from system environment variables (via Tauri) or localStorage
  * Priority: 
- * 1. System environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY) - checked via Tauri
+ * 1. System environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY) - checked via Tauri
  * 2. Vite .env file variables (import.meta.env.*)
  * 3. localStorage (set via settings UI)
  */
-export async function getApiKey(provider: 'openai' | 'anthropic'): Promise<string | null> {
-  const envVarName = provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY';
+export async function getApiKey(provider: 'openai' | 'anthropic' | 'gemini'): Promise<string | null> {
+  const envVarNames: Record<string, string> = {
+    openai: 'OPENAI_API_KEY',
+    anthropic: 'ANTHROPIC_API_KEY',
+    gemini: 'GEMINI_API_KEY',
+  };
+  const envVarName = envVarNames[provider];
   
   console.log(`[getApiKey] Checking for ${envVarName}...`);
   
@@ -918,14 +1257,14 @@ export async function getApiKey(provider: 'openai' | 'anthropic'): Promise<strin
 /**
  * Get API key from localStorage only (synchronous)
  */
-export function getStoredApiKey(provider: 'openai' | 'anthropic'): string | null {
+export function getStoredApiKey(provider: 'openai' | 'anthropic' | 'gemini'): string | null {
   return localStorage.getItem(`${provider}_api_key`);
 }
 
-export function setStoredApiKey(provider: 'openai' | 'anthropic', key: string) {
+export function setStoredApiKey(provider: 'openai' | 'anthropic' | 'gemini', key: string) {
   localStorage.setItem(`${provider}_api_key`, key);
 }
 
-export function clearStoredApiKey(provider: 'openai' | 'anthropic') {
+export function clearStoredApiKey(provider: 'openai' | 'anthropic' | 'gemini') {
   localStorage.removeItem(`${provider}_api_key`);
 }

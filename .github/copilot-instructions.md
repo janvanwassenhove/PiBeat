@@ -40,7 +40,8 @@ PiBeat is a desktop music coding application built with **Tauri v2** (Rust backe
 buffers[], activeBufferId, isPlaying, isRecording, masterVolume, bpm,
 waveform[], logs[], samples[], effects{}, showSampleBrowser, showEffectsPanel,
 showHelp, showAgentChat, agentMessages[],
-userSamples[], userSamplesDir, userSamplesLoading, showUserSamplePanel
+userSamples[], userSamplesDir, userSamplesLoading, showUserSamplePanel,
+sampleDurations{}, sampleDurationsLoading
 ```
 
 ### Tauri Commands (invoke)
@@ -54,7 +55,9 @@ userSamples[], userSamplesDir, userSamplesLoading, showUserSamplePanel
 - `set_user_samples_dir(dir)` — Set user sample folder path
 - `get_user_samples_dir()` → `string | null` — Get current user sample folder
 - `scan_user_samples()` → `UserSampleInfo[]` — Scan and analyze user audio files (BPM, type, mood, tags)
+- `get_sample_durations(names: string[])` → `Record<string, number>` — Get durations (in seconds) for built-in or file-path samples (used by timeline visualization)
 - `get_env_var(key)` → `string | null` — Read system environment variables (used for API keys)
+- `validate_parity(code)` → `ParityReport` — Deep parity analysis: parses code, classifies all features, generates fix suggestions
 
 ## Sonic Pi Language Reference
 
@@ -115,18 +118,20 @@ sample :bass_hit_c                 # Bass hit
 
 **⚠️ Unsupported sample parameters:**
 ```ruby
-# ❌ NOT SUPPORTED:
-sample :kick, beat_stretch: 4      # NOT IMPLEMENTED
-sample :kick, pitch: 0.5           # NOT IMPLEMENTED
-sample :kick, start: 0.25          # NOT IMPLEMENTED
-sample :kick, finish: 0.75         # NOT IMPLEMENTED
-sample :kick, lpf: 80              # NOT IMPLEMENTED (use with_fx :lpf instead)
+# ❌ NOT APPLIED (parsed but ignored):
+sample :kick, lpf: 80              # NOT APPLIED (use with_fx :lpf instead)
 ```
 
 **✅ SUPPORTED sample parameters:**
 - `amp` — Volume (0.0 – 1.0+)
 - `rate` — Playback speed (0.1 – 4.0)
 - `pan` — Stereo panning (-1 to 1)
+- `pitch:` — Semitone shift (implemented via rate adjustment)
+- `rpitch:` — Semitone-based rate adjustment
+- `sustain:` — Truncates sample playback to N beats
+- `beat_stretch:` — Adjusts rate so sample fits N beats (uses sample duration/BPM)
+- `start:` — Normalized start position (0.0-1.0) in sample
+- `finish:` — Normalized end position (0.0-1.0) in sample
 
 ### Common Parameters
 | Parameter | Description | Range |
@@ -162,6 +167,9 @@ end
   play :e4
   sleep 0.25
 end
+
+# Inline brace form (equivalent to do...end)
+8.times { play :c4; sleep 0.25 }
 ```
 
 ### Effects (FX)
@@ -186,7 +194,27 @@ with_fx :hpf, cutoff: 50 do
   play :c4
 end
 
-with_fx :flanger, phase: 0.5 do
+with_fx :flanger, rate: 0.25, depth: 0.5, mix: 1.0 do
+  play :c4
+end
+
+with_fx :chorus, rate: 0.3, depth: 0.5, mix: 1.0 do
+  play :c4
+end
+
+with_fx :ring_mod, freq: 30, mix: 1.0 do
+  play :c4
+end
+
+with_fx :wobble, rate: 4, depth: 0.5, mix: 1.0 do
+  play :c4
+end
+
+with_fx :octaver, mix: 1.0, sub_amp: 1.0, super_amp: 1.0 do
+  play :c4
+end
+
+with_fx :pan, pan: 0.5 do
   play :c4
 end
 
@@ -227,7 +255,7 @@ if one_in(3) do
 end
 
 # ⚠️ NOT YET SUPPORTED:
-play choose([:c4, :e4, :g4])       # choose() NOT IMPLEMENTED
+play choose([:c4, :e4, :g4])       # ✅ NOW SUPPORTED
 ```
 
 ### Rings & Ticks
@@ -401,15 +429,29 @@ The PiBeat parser supports an **extended subset** of Sonic Pi. When generating o
 - ✅ `one_in(n)` — Probabilistic evaluation (in `if` blocks and trailing `if`)
 - ✅ `if condition do ... end` — Block conditionals
 - ✅ Trailing `if` on single lines (e.g., `sample :x if one_in(3)`)
+- ✅ `beat_stretch:` — Adjusts rate so sample fits N beats (uses sample duration/BPM)
+- ✅ `start:`, `finish:` — Sample trimming with automatic fade-out
+- ✅ `at` blocks — Schedule code at specific beat times
+- ✅ `time_warp` — Schedule code at relative offset
 
 **⚠️ PARTIAL / LIMITED:**
 - ⚠️ `.tick`, `.look` — Ring values stored but runtime cycling is approximated
-- ⚠️ `cue`, `sync:` — Recognized but treated as no-ops
-- ⚠️ `beat_stretch:`, `pitch:`, `start:`, `finish:` — Parsed but not audio-applied
+- ⚠️ `cue`, `sync`, `sync:` — Recognized, logged, but no actual synchronization
+- ⚠️ `pitch:` — Parsed but applied via rate adjustment only
+- ⚠️ `control` — Parsed, no-op (use explicit notes with timing instead)
 
-**❌ NOT SUPPORTED:**
-- ❌ `choose()` — Use explicit values instead 
-- ❌ `at` blocks — Not fully implemented
+**Workaround for `control`:** Instead of modifying running synths, use multiple notes:
+```ruby
+# Instead of:
+s = play :c4, sustain: 10
+sleep 1
+control s, note: :e4
+
+# Use:
+play :c4, sustain: 1
+sleep 1
+play :e4, sustain: 9
+```
 
 When the agent suggests refactorings, it should follow these principles:
 
@@ -434,12 +476,60 @@ When the agent suggests refactorings, it should follow these principles:
 ## Agent Chat / LLM Integration
 
 The agent chat system (`src/components/AgentChat.tsx`, `src/llm.ts`, `src/agent.ts`) supports:
-- **Multi-provider**: OpenAI, Anthropic, or local rule-based fallback
+- **Multi-provider**: OpenAI, Anthropic, Google Gemini, or local rule-based fallback
 - **Reactive agent pattern**: Self-reflection with up to 2 iteration cycles
+- **Song structure generation**: Intros, outros, verses, choruses, bridges, buildups, drops
+- **Fade effects**: Fade-in and fade-out patterns with automated amplitude/filter control
+- **Code-aware generation**: Analyzes user's current buffer to match BPM, key, and style
 - **API key sources** (priority order):
   1. System environment variables (via Tauri `get_env_var` command)
   2. Vite `.env` file (build-time)
   3. localStorage (Settings UI)
+
+### Agent Quick Actions
+The agent panel provides quick action buttons for:
+- **Generate beat** — drum patterns with kick, snare, hihat
+- **Create intro** — ambient intro that eases into the track  
+- **Create drop** — high-energy section with heavy drums and bass
+- **Create buildup** — tension builder with snare rolls and risers
+- **Create verse** — moderate-intensity main groove
+- **Create chorus** — memorable hook with full chords
+- **Create bridge** — contrasting section for variety
+- **Create outro** — fade-out with dissolving reverb
+- **Fade in/out** — automated amplitude and filter ramps
+- **Full song structure** — complete arrangement with multiple sections
+- **Parity check** — full Sonic Pi compatibility analysis (synths, effects, samples, constructs)
+- **Fix parity issues** — auto-apply workarounds for unsupported features
+- **Check effects parity** — effects-focused compatibility report
+- **Check synth parity** — synth-focused compatibility report
+
+### Parity Analysis System
+The agent can analyze code for full Sonic Pi sound parity:
+
+#### Tauri Command: `validate_parity(code)`
+- Parses code and collects all feature usage (synths, effects, samples, constructs)
+- Classifies each feature as supported/partial/unsupported
+- Generates fix suggestions with replacement code
+- Returns `ParityReport` with score (0-100%), categories, and suggestions
+
+#### Agent Intents:
+- `parity_check` — Full analysis of all categories
+- `parity_fix` — Auto-apply workarounds for unsupported features
+- `parity_synths` — Synth-focused analysis
+- `parity_effects` — Effects-focused analysis
+- `parity_samples` — Sample parameter analysis
+
+#### LLM Integration:
+- System context includes comprehensive parity knowledge (42 synths, 22 effects, defaults)
+- Parity-related user prompts get enhanced instructions for thorough analysis
+- LLM can generate corrected code that uses only fully supported features
+
+### Code Context Integration
+When generating new sections, the agent:
+1. Reads the user's current buffer code
+2. Identifies BPM, key, synth choices, and sample usage
+3. Generates compatible code that blends with existing track
+4. Matches the aesthetic (electronic, ambient, etc.)
 
 ### Important Implementation Notes:
 - **GPT-5 models** (gpt-5.2, gpt-5-mini, gpt-5-nano):
@@ -454,9 +544,15 @@ The agent chat system (`src/components/AgentChat.tsx`, `src/llm.ts`, `src/agent.
   - Use `max_tokens: 4096` (Anthropic's standard limit)
   - Use `temperature: 1.0` (Anthropic's default)
   - System message passed separately via `system` parameter
+- **Gemini models** (gemini-3.1-pro, gemini-3-flash, gemini-3.1-flash-lite):
+  - Use `@google/genai` SDK (`GoogleGenAI` class)
+  - Use `maxOutputTokens: 8192`, `temperature: 1.0`
+  - System instruction passed via `config.systemInstruction`
+  - Messages use `'user'` and `'model'` roles (not `'assistant'`)
+  - API key env var: `GEMINI_API_KEY`
 - Empty strings `""` are treated as no API key (converted to `undefined`)
-- Comprehensive console logging for debugging (search for `[LLM]`, `[getApiKey]`, `[AgentChat]`, `[callOpenAI]`, `[callAnthropic]` prefixes)
-- Token limits must be high enough to accommodate 4920-char system context + user message + response
+- Comprehensive console logging for debugging (search for `[LLM]`, `[getApiKey]`, `[AgentChat]`, `[callOpenAI]`, `[callAnthropic]`, `[callGemini]` prefixes)
+- Token limits must be high enough to accommodate system context + user message + buffer code + response
 
 ## When Adding New Features
 

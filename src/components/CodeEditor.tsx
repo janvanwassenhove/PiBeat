@@ -37,10 +37,123 @@ const SAMPLE_NAMES = [
 ];
 
 const CodeEditor: React.FC = () => {
-  const { buffers, activeBufferId, updateBufferCode, theme } = useStore();
+  const { buffers, activeBufferId, updateBufferCode, theme, isPlaying, activeLines, updateActiveLines, errorLine, setErrorLine, playingBufferId } = useStore();
   const activeBuffer = buffers.find(b => b.id === activeBufferId);
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);
+  const decorationsRef = useRef<string[]>([]);
+  const errorDecorationsRef = useRef<string[]>([]);
+  const activeLinesInFlightRef = useRef(false);
+  const highlightPollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+
+  // Poll active lines during playback and for a grace period after.
+  // The backend keeps intervals alive until they expire, so we continue
+  // polling after the frontend's isPlaying goes false to catch late lines
+  // (samples, final plays that fire near the end of the schedule).
+  useEffect(() => {
+    const startPolling = () => {
+      if (highlightPollRef.current) return; // already polling
+      const poll = () => {
+        if (activeLinesInFlightRef.current) return;
+        activeLinesInFlightRef.current = true;
+        updateActiveLines().finally(() => {
+          activeLinesInFlightRef.current = false;
+        });
+      };
+      poll(); // immediate first poll
+      highlightPollRef.current = setInterval(poll, 50);
+    };
+
+    const stopPolling = () => {
+      if (highlightPollRef.current) {
+        clearInterval(highlightPollRef.current);
+        highlightPollRef.current = null;
+      }
+    };
+
+    if (isPlaying) {
+      startPolling();
+    } else {
+      // When isPlaying goes false, keep polling for up to 3s so late
+      // intervals still highlight.  The backend returns [] once all
+      // intervals expire, which clears the decorations naturally.
+      if (highlightPollRef.current) {
+        const graceTimer = setTimeout(stopPolling, 3000);
+        return () => {
+          clearTimeout(graceTimer);
+          stopPolling();
+        };
+      }
+    }
+
+    return () => stopPolling();
+  }, [isPlaying, updateActiveLines]);
+
+  // Apply Monaco decorations when activeLines change
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+    
+    if (!editor || !monaco) {
+      return;
+    }
+
+    // Only show active-line highlights on the buffer that is actually playing
+    const showHighlights = playingBufferId === activeBufferId;
+    const newDecorations = showHighlights
+      ? activeLines.map(lineNum => ({
+          range: new monaco.Range(lineNum, 1, lineNum, 1),
+          options: {
+            isWholeLine: true,
+            className: 'active-line-highlight',
+            glyphMarginClassName: 'active-line-glyph',
+          },
+        }))
+      : [];
+
+    // Update decorations - Monaco will diff and update efficiently
+    decorationsRef.current = editor.deltaDecorations(decorationsRef.current, newDecorations);
+  }, [activeLines, activeBufferId, playingBufferId]);
+
+  // Highlight error line when user clicks an error/warning in the log
+  useEffect(() => {
+    const editor = editorRef.current;
+    const monaco = monacoRef.current;
+
+    if (!editor || !monaco) return;
+
+    if (errorLine === null) {
+      // Clear error decorations
+      errorDecorationsRef.current = editor.deltaDecorations(errorDecorationsRef.current, []);
+      return;
+    }
+
+    // Reveal the line in the editor
+    editor.revealLineInCenter(errorLine);
+    editor.setPosition({ lineNumber: errorLine, column: 1 });
+    editor.focus();
+
+    // Apply error decoration
+    const newDecorations = [{
+      range: new monaco.Range(errorLine, 1, errorLine, 1),
+      options: {
+        isWholeLine: true,
+        className: 'error-line-highlight',
+        glyphMarginClassName: 'error-line-glyph',
+        overviewRuler: {
+          color: '#ff4466',
+          position: monaco.editor.OverviewRulerLane.Full,
+        },
+      },
+    }];
+    errorDecorationsRef.current = editor.deltaDecorations(errorDecorationsRef.current, newDecorations);
+
+    // Auto-clear the error highlight after 5 seconds
+    const timer = setTimeout(() => {
+      setErrorLine(null);
+    }, 5000);
+    return () => clearTimeout(timer);
+  }, [errorLine, setErrorLine]);
 
   const handleEditorMount: OnMount = (editor, monaco) => {
     editorRef.current = editor;
@@ -224,7 +337,10 @@ const CodeEditor: React.FC = () => {
     editor.addAction({
       id: 'run-code',
       label: 'Run Code',
-      keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyR],
+      keybindings: [
+        monaco.KeyMod.Alt | monaco.KeyCode.KeyR,
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.Enter,
+      ],
       run: () => {
         useStore.getState().runCode();
       },
@@ -233,7 +349,10 @@ const CodeEditor: React.FC = () => {
     editor.addAction({
       id: 'stop-code',
       label: 'Stop',
-      keybindings: [monaco.KeyMod.Alt | monaco.KeyCode.KeyS],
+      keybindings: [
+        monaco.KeyMod.Alt | monaco.KeyCode.KeyS,
+        monaco.KeyMod.CtrlCmd | monaco.KeyCode.Period,
+      ],
       run: () => {
         useStore.getState().stopAudio();
       },
@@ -242,7 +361,10 @@ const CodeEditor: React.FC = () => {
     editor.addAction({
       id: 'toggle-recording',
       label: 'Toggle Recording',
-      keybindings: [monaco.KeyMod.Alt | monaco.KeyMod.Shift | monaco.KeyCode.KeyR],
+      keybindings: [
+        monaco.KeyMod.Alt | monaco.KeyMod.Shift | monaco.KeyCode.KeyR,
+        monaco.KeyMod.CtrlCmd | monaco.KeyMod.Shift | monaco.KeyCode.KeyR,
+      ],
       run: () => {
         const state = useStore.getState();
         if (state.isRecording) {

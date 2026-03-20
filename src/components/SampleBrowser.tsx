@@ -1,6 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store';
-import { FaPlay, FaTimes, FaFolder, FaChevronRight, FaChevronDown } from 'react-icons/fa';
+import { FaPlay, FaFolder, FaChevronRight, FaChevronDown } from 'react-icons/fa';
+import DetachablePanel from './DetachablePanel';
 
 const SampleBrowser: React.FC = () => {
   const { samples, fetchSamples, playSampleFile, showSampleBrowser, toggleSampleBrowser, updateBufferCode, buffers, activeBufferId } = useStore();
@@ -28,15 +29,6 @@ const SampleBrowser: React.FC = () => {
     }
   }, [showSampleBrowser, fetchSamples]);
 
-  // Initialize all categories as collapsed on first render
-  useEffect(() => {
-    const categories = Object.keys(grouped);
-    if (categories.length > 0 && Object.keys(collapsedCategories).length === 0) {
-      const initialState = categories.reduce((acc, cat) => ({ ...acc, [cat]: true }), {});
-      setCollapsedCategories(initialState);
-    }
-  }, [grouped, collapsedCategories]);
-
   if (!showSampleBrowser) return null;
 
   const toggleCategory = (category: string) => {
@@ -51,13 +43,7 @@ const SampleBrowser: React.FC = () => {
   };
 
   return (
-    <div className="side-panel sample-browser">
-      <div className="panel-header">
-        <h3><FaFolder /> Samples</h3>
-        <button className="close-btn" onClick={toggleSampleBrowser}>
-          <FaTimes />
-        </button>
-      </div>
+    <DetachablePanel panelId="sampleBrowser" title="Samples" icon={<FaFolder />} onClose={toggleSampleBrowser} className="sample-browser">
       <div className="panel-content">
         <div className="synth-filter">
           <input
@@ -84,12 +70,12 @@ const SampleBrowser: React.FC = () => {
           <div key={category} className="sample-category">
             <h4 className="category-title" onClick={() => toggleCategory(category)}>
               <span className="category-chevron">
-                {collapsedCategories[category] ? <FaChevronRight /> : <FaChevronDown />}
+                {collapsedCategories[category] === false ? <FaChevronDown /> : <FaChevronRight />}
               </span>
               {category}
               <span className="category-count">{items.length}</span>
             </h4>
-            {!collapsedCategories[category] && (
+            {collapsedCategories[category] === false && (
               <div className="sample-list">
                 {items.map((sample) => (
                   <div key={sample.path} className="sample-item">
@@ -117,7 +103,7 @@ const SampleBrowser: React.FC = () => {
           </div>
         ))}
       </div>
-    </div>
+    </DetachablePanel>
   );
 };
 

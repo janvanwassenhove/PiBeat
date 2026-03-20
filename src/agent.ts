@@ -7,6 +7,41 @@
  */
 
 import { AgentMessage } from './store';
+import { invoke } from '@tauri-apps/api/core';
+
+// ──────────────────────────────────────────────
+// Parity Analysis Types (mirrors Rust ParityReport)
+// ──────────────────────────────────────────────
+
+interface ParityItem {
+  feature: string;
+  status: 'supported' | 'partial' | 'unsupported';
+  detail: string;
+}
+
+interface ParityCategory {
+  name: string;
+  status: 'full' | 'partial' | 'unsupported' | 'unused';
+  items: ParityItem[];
+}
+
+interface ParitySuggestion {
+  severity: 'error' | 'warning' | 'info';
+  feature: string;
+  message: string;
+  fix: string | null;
+}
+
+interface ParityReport {
+  score: number;
+  features_used: number;
+  features_supported: number;
+  features_partial: number;
+  features_unsupported: number;
+  categories: ParityCategory[];
+  suggestions: ParitySuggestion[];
+  warnings: string[];
+}
 
 // ──────────────────────────────────────────────
 // Knowledge base
@@ -185,6 +220,302 @@ live_loop :offbeat do
   sample :hihat, amp: 0.5 if pattern.tick
   sleep 0.25
 end`,
+
+  // ──────────────────────────────────────────
+  // Song Structure Templates
+  // ──────────────────────────────────────────
+
+  intro: `## ---- INTRO (8 beats) ---- ##
+live_loop :intro_pad do
+  use_synth :blade
+  with_fx :lpf, cutoff: 60, mix: 1.0 do
+    with_fx :reverb, mix: 0.7, room: 0.9 do
+      play chord(:c4, :minor7), amp: 0.15, attack: 2, sustain: 2, release: 2
+    end
+  end
+  sleep 4
+  stop
+end
+
+live_loop :intro_perc do
+  8.times do
+    sample :perc_snap, amp: 0.3, rate: 0.8
+    sleep 0.5
+  end
+  stop
+end`,
+
+  intro_electronic: `## ---- ELECTRONIC INTRO (16 beats) ---- ##
+live_loop :intro_synth do
+  use_synth :dsaw
+  with_fx :lpf, cutoff: 50 do
+    with_fx :reverb, mix: 0.6 do
+      notes = ring(:c3, :g3, :c4, :eb4)
+      play notes.tick, amp: 0.2, attack: 0.5, release: 1.5
+      sleep 2
+    end
+  end
+  stop if look > 7
+end
+
+live_loop :intro_noise do
+  with_fx :hpf, cutoff: 90 do
+    sample :ambi_drone, amp: 0.15, rate: 0.5
+  end
+  sleep 8
+  stop
+end`,
+
+  fade_in: `## ---- FADE IN (8 beats) ---- ##
+live_loop :fade_in_main do
+  tick
+  amp_val = [0.05, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8].ring.look
+  cutoff_val = [40, 50, 60, 70, 80, 90, 100, 110, 120].ring.look
+  
+  use_synth :super_saw
+  with_fx :lpf, cutoff: cutoff_val do
+    play chord(:c4, :minor), amp: amp_val, release: 0.8
+  end
+  sleep 1
+  stop if look > 8
+end`,
+
+  verse: `## ---- VERSE ---- ##
+live_loop :verse_drums do
+  sample :kick
+  sleep 0.5
+  sample :hihat, amp: 0.5
+  sleep 0.5
+  sample :snare, amp: 0.8
+  sleep 0.5
+  sample :hihat, amp: 0.5
+  sleep 0.5
+end
+
+live_loop :verse_bass do
+  use_synth :tb303
+  notes = ring(:c2, :c2, :eb2, :f2, :c2, :c2, :g1, :ab1)
+  play notes.tick, cutoff: 80, release: 0.25, amp: 0.5
+  sleep 0.5
+end
+
+live_loop :verse_pad do
+  use_synth :blade
+  with_fx :reverb, mix: 0.5 do
+    play chord(:c4, :minor7), amp: 0.1, attack: 2, release: 2
+  end
+  sleep 4
+end`,
+
+  buildup: `## ---- BUILDUP (8 beats) ---- ##
+live_loop :buildup_snare do
+  with_fx :echo, phase: 0.125, decay: 0.5 do
+    16.times do |i|
+      sample :drum_snare_soft, amp: 0.4 + (i * 0.08), rate: 1 + (i * 0.02)
+      sleep 0.25 - (i * 0.005)
+    end
+  end
+  stop
+end
+
+live_loop :buildup_riser do
+  use_synth :noise
+  with_fx :hpf, cutoff: 30 do
+    play :c4, amp: 0.3, attack: 4, release: 0
+  end
+  sleep 4
+  stop
+end`,
+
+  drop: `## ---- DROP ---- ##
+live_loop :drop_drums do
+  sample :bd_haus, amp: 1.2
+  sample :perc_snap, amp: 0.8
+  sleep 0.5
+  sample :hihat, amp: 0.6
+  sleep 0.25
+  sample :hihat, amp: 0.4
+  sleep 0.25
+  sample :sn_dub, amp: 1.0
+  sleep 0.5
+  sample :hihat, amp: 0.6
+  sleep 0.25
+  sample :hihat, amp: 0.4
+  sleep 0.25
+end
+
+live_loop :drop_bass do
+  use_synth :dsaw
+  with_fx :distortion, distort: 0.3 do
+    play :c1, amp: 0.6, release: 0.3
+    sleep 0.5
+    play :c1, amp: 0.4, release: 0.2
+    sleep 0.25
+    play :eb1, amp: 0.5, release: 0.3
+    sleep 0.25
+  end
+end
+
+live_loop :drop_lead do
+  use_synth :super_saw
+  with_fx :reverb, mix: 0.3 do
+    play chord(:c4, :minor), amp: 0.4, release: 0.5
+    sleep 2
+  end
+end`,
+
+  bridge: `## ---- BRIDGE ---- ##
+live_loop :bridge_pad do
+  use_synth :prophet
+  with_fx :reverb, room: 0.9, mix: 0.6 do
+    play chord(:ab3, :minor7), amp: 0.25, attack: 1.5, sustain: 2, release: 2
+    sleep 4
+    play chord(:eb3, :major7), amp: 0.25, attack: 1.5, sustain: 2, release: 2
+    sleep 4
+  end
+end
+
+live_loop :bridge_arp do
+  use_synth :pluck
+  notes = ring(:ab4, :c5, :eb5, :g5, :ab5, :g5, :eb5, :c5)
+  play notes.tick, amp: 0.35
+  sleep 0.5
+end
+
+live_loop :bridge_perc do
+  sample :perc_snap, amp: 0.4
+  sleep 1
+  sample :perc_snap, amp: 0.2
+  sleep 1
+end`,
+
+  chorus: `## ---- CHORUS ---- ##
+live_loop :chorus_chords do
+  use_synth :super_saw
+  with_fx :reverb, mix: 0.4 do
+    play chord(:c4, :minor), amp: 0.4, release: 1.2
+    sleep 2
+    play chord(:ab3, :major), amp: 0.4, release: 1.2
+    sleep 2
+    play chord(:eb4, :major), amp: 0.4, release: 1.2
+    sleep 2
+    play chord(:bb3, :major), amp: 0.4, release: 1.2
+    sleep 2
+  end
+end
+
+live_loop :chorus_drums do
+  sample :bd_haus, amp: 1.0
+  sample :hihat, amp: 0.4
+  sleep 0.5
+  sample :hihat, amp: 0.6
+  sleep 0.5
+  sample :sn_dub, amp: 0.9
+  sample :hihat, amp: 0.4
+  sleep 0.5
+  sample :hihat, amp: 0.6
+  sleep 0.5
+end
+
+live_loop :chorus_bass do
+  use_synth :tb303
+  notes = ring(:c2, :c2, :ab1, :ab1, :eb2, :eb2, :bb1, :bb1)
+  play notes.tick, cutoff: 90, release: 0.3, amp: 0.5
+  sleep 0.5
+end`,
+
+  outro: `## ---- OUTRO (fade out) ---- ##
+live_loop :outro do
+  tick
+  amp_val = [0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05].ring.look
+  cutoff_val = [120, 110, 100, 90, 80, 70, 60, 50, 40].ring.look
+  
+  use_synth :blade
+  with_fx :lpf, cutoff: cutoff_val do
+    with_fx :reverb, mix: 0.5 + (look * 0.05) do
+      play chord(:c4, :minor7), amp: amp_val, release: 2
+    end
+  end
+  sleep 2
+  stop if look > 8
+end
+
+live_loop :outro_perc do
+  tick
+  amp_val = [0.6, 0.5, 0.4, 0.35, 0.3, 0.25, 0.2, 0.15, 0.1].ring.look
+  sample :perc_snap, amp: amp_val
+  sleep 1
+  stop if look > 8
+end`,
+
+  fade_out: `## ---- FADE OUT (8 beats) ---- ##
+live_loop :fade_out_main do
+  tick
+  amp_val = [0.8, 0.7, 0.6, 0.5, 0.4, 0.3, 0.2, 0.1, 0.05].ring.look
+  
+  use_synth :super_saw
+  with_fx :reverb, mix: 0.4 + (look * 0.06) do
+    play chord(:c4, :minor), amp: amp_val, release: 0.8
+  end
+  sleep 1
+  stop if look > 8
+end`,
+
+  multiple_verses_with_drop: `## ---- FULL TRACK: VERSES + DROP ---- ##
+use_bpm 128
+
+# Control flow with sections
+define :section_length do 16 end  # beats per section
+
+## ---- VERSE 1 ---- ##
+live_loop :v1_drums do
+  sample :kick
+  sleep 0.5
+  sample :hihat, amp: 0.4
+  sleep 0.5
+  sample :snare, amp: 0.7
+  sleep 0.5
+  sample :hihat, amp: 0.4
+  sleep 0.5
+end
+
+live_loop :v1_bass do
+  use_synth :tb303
+  notes = ring(:c2, :c2, :eb2, :f2)
+  play notes.tick, cutoff: 70, release: 0.3, amp: 0.5
+  sleep 0.5
+end
+
+live_loop :v1_pad do
+  use_synth :blade
+  with_fx :reverb, mix: 0.5 do
+    play chord(:c4, :minor7), amp: 0.1, attack: 2, release: 2
+  end
+  sleep 4
+end
+
+## After ~16 beats, this will naturally loop
+## To sequence sections, use timestamps with sleep:
+# sleep 16  # After verse 1
+# Then define drop loops below...
+
+## ---- DROP (Add after verse for contrast) ---- ##
+# Uncomment and run for drop:
+# live_loop :drop_drums do
+#   sample :bd_haus, amp: 1.2
+#   sample :perc_snap, amp: 0.8
+#   sleep 0.5
+#   sample :hihat, amp: 0.6
+#   sleep 0.25
+#   sample :hihat, amp: 0.4
+#   sleep 0.25
+#   sample :sn_dub, amp: 1.0
+#   sleep 0.5
+#   sample :hihat, amp: 0.6
+#   sleep 0.25
+#   sample :hihat, amp: 0.4
+#   sleep 0.25
+# end`,
 };
 
 // ──────────────────────────────────────────────
@@ -329,6 +660,16 @@ type Intent =
   | 'generate_acid'
   | 'generate_full'
   | 'generate_euclidean'
+  | 'generate_intro'
+  | 'generate_outro'
+  | 'generate_verse'
+  | 'generate_chorus'
+  | 'generate_bridge'
+  | 'generate_buildup'
+  | 'generate_drop'
+  | 'generate_fade_in'
+  | 'generate_fade_out'
+  | 'generate_structure'
   | 'refactor'
   | 'explain'
   | 'add_fx'
@@ -337,14 +678,38 @@ type Intent =
   | 'list_fx'
   | 'help_syntax'
   | 'analyze'
+  | 'parity_check'
+  | 'parity_fix'
+  | 'parity_synths'
+  | 'parity_effects'
+  | 'parity_samples'
   | 'general';
 
 function detectIntent(message: string): Intent {
   const m = message.toLowerCase();
 
+  // Parity analysis intents — check BEFORE generic analyze
+  if (/parity.*check|check.*parity|sound.*parity|sonic.*pi.*compat|compatibility.*check|full.*parity|parity.*report|parity.*analys/.test(m)) return 'parity_check';
+  if (/parity.*fix|fix.*parity|fix.*compat|auto.*fix.*parity|apply.*parity/.test(m)) return 'parity_fix';
+  if (/parity.*synth|synth.*parity|synth.*compat|check.*synth/.test(m)) return 'parity_synths';
+  if (/parity.*effect|effect.*parity|effect.*compat|check.*effect|fx.*parity|fx.*compat/.test(m)) return 'parity_effects';
+  if (/parity.*sample|sample.*parity|sample.*compat|check.*sample.*compat/.test(m)) return 'parity_samples';
+
   if (/refactor|clean\s*up|improve|restructure|optimize|tidy/.test(m)) return 'refactor';
   if (/explain|what does|how does|walk.*through|line.by.line|understand/.test(m)) return 'explain';
   if (/analyze|analys|check|review|issues|problems|bugs|mistakes/.test(m)) return 'analyze';
+
+  // Song structure detection (check these before generic beat/melody)
+  if (/intro\b|introduction|open(?:ing|er)/.test(m)) return 'generate_intro';
+  if (/outro\b|ending|close|final\s*section/.test(m)) return 'generate_outro';
+  if (/fade[\s-]?in/.test(m)) return 'generate_fade_in';
+  if (/fade[\s-]?out/.test(m)) return 'generate_fade_out';
+  if (/verse\b/.test(m)) return 'generate_verse';
+  if (/chorus\b|hook\b/.test(m)) return 'generate_chorus';
+  if (/bridge\b|break\b|interlude\b/.test(m)) return 'generate_bridge';
+  if (/build[\s-]?up|riser|tension/.test(m)) return 'generate_buildup';
+  if (/drop\b|climax|bang|peak/.test(m)) return 'generate_drop';
+  if (/structure|section|multiple.*verse|verses.*drop|arrange|arrangement/.test(m)) return 'generate_structure';
 
   if (/full\s*track|complete\s*song|entire.*track|whole.*song/.test(m)) return 'generate_full';
   if (/euclidean|spread|polyrhythm/.test(m)) return 'generate_euclidean';
@@ -448,6 +813,85 @@ export async function processAgentMessage(
         content: `Here's a euclidean rhythm pattern using \`spread\`:\n\n\`\`\`ruby\n${TEMPLATES.euclidean}\n\`\`\`\n\n\`spread(5, 8)\` distributes 5 hits as evenly as possible over 8 steps — a classic technique for interesting rhythms.`,
       };
 
+    // ── Song Structure Handlers ──
+
+    case 'generate_intro': {
+      const isElectronic = /electronic|edm|techno|house|synth/.test(userMessage.toLowerCase());
+      const template = isElectronic ? TEMPLATES.intro_electronic : TEMPLATES.intro;
+      const style = isElectronic ? 'electronic' : 'ambient pad';
+      return {
+        role: 'assistant',
+        content: `Here's a ${style} intro that eases into the track:\n\n\`\`\`ruby\n${template}\n\`\`\`\n\nThe intro uses \`stop\` to end after one iteration. Remove the \`stop\` lines if you want them to continue looping.\n\n**Tips:**\n• Use \`with_fx :lpf\` with low cutoff to start muffled, then increase\n• Keep the intro sparse — leave room to build`,
+      };
+    }
+
+    case 'generate_outro': {
+      return {
+        role: 'assistant',
+        content: `Here's an outro with a gradual fade out:\n\n\`\`\`ruby\n${TEMPLATES.outro}\n\`\`\`\n\nThe amplitude and filter cutoff decrease over time using \`tick\` and \`ring\`. The reverb mix increases to add space as elements fade.\n\n**Tips:**\n• Add more \`live_loop\` blocks with similar fade patterns\n• Increase reverb/delay towards the end for a "dissolving" effect`,
+      };
+    }
+
+    case 'generate_fade_in': {
+      return {
+        role: 'assistant',
+        content: `Here's a fade-in pattern over 8 beats:\n\n\`\`\`ruby\n${TEMPLATES.fade_in}\n\`\`\`\n\nBoth amplitude and filter cutoff ramp up using rings and \`.tick/.look\`. The track emerges gradually from silence.\n\n**Customize:**\n• Adjust the amp values in the ring (0.05 → 0.8)\n• Change the cutoff values for different filtering intensity`,
+      };
+    }
+
+    case 'generate_fade_out': {
+      return {
+        role: 'assistant',
+        content: `Here's a fade-out pattern over 8 beats:\n\n\`\`\`ruby\n${TEMPLATES.fade_out}\n\`\`\`\n\nThe amplitude decreases from 0.8 to 0.05 while reverb increases. Use this at the end of your track.\n\n**Tips:**\n• Apply the same fade logic to all your active live_loops\n• Increase reverb/delay mix as volume drops for a natural tail`,
+      };
+    }
+
+    case 'generate_verse': {
+      const hasExistingCode = currentCode.trim().length > 50;
+      let response = `Here's a verse pattern with drums, bass, and pad:\n\n\`\`\`ruby\n${TEMPLATES.verse}\n\`\`\`\n\n`;
+      if (hasExistingCode) {
+        response += `This is designed to work alongside your existing code. The verse has a stripped-back feel compared to a chorus or drop — perfect for vocal sections or building anticipation.`;
+      } else {
+        response += `The verse establishes the main groove. It's intentionally less intense than a chorus or drop, giving room to build.`;
+      }
+      return { role: 'assistant', content: response };
+    }
+
+    case 'generate_chorus': {
+      return {
+        role: 'assistant',
+        content: `Here's a memorable chorus section:\n\n\`\`\`ruby\n${TEMPLATES.chorus}\n\`\`\`\n\nThe chorus uses:\n• **Super saw** chords for width and impact\n• **Chord progression:** Cm → Ab → Eb → Bb (classic emotional progression)\n• **Full drums** with consistent energy\n• **Driving bass** following the chord roots\n\n**Tips:**\n• Add a lead melody on top\n• Contrast with a more minimal verse`,
+      };
+    }
+
+    case 'generate_bridge': {
+      return {
+        role: 'assistant',
+        content: `Here's a contrasting bridge section:\n\n\`\`\`ruby\n${TEMPLATES.bridge}\n\`\`\`\n\nThe bridge shifts to Ab minor / Eb major for harmonic contrast. It uses:\n• **Prophet synth** — warmer pad sound\n• **Pluck arpeggios** — keeps movement without being intense\n• **Sparse percussion** — just accents\n\nGreat for creating a "moment of reflection" before returning to the main sections.`,
+      };
+    }
+
+    case 'generate_buildup': {
+      return {
+        role: 'assistant',
+        content: `Here's a buildup that creates tension before a drop:\n\n\`\`\`ruby\n${TEMPLATES.buildup}\n\`\`\`\n\nTechniques used:\n• **Accelerating snare rolls** — amplitude and rate increase each hit\n• **Noise riser** — filtered noise with long attack\n• **Echo effect** — adds density\n\n**Variation ideas:**\n• Add a rising synth note with pitch bend\n• Increase the tempo slightly with \`use_bpm\`\n• Add filter automation (cutoff increasing)`,
+      };
+    }
+
+    case 'generate_drop': {
+      return {
+        role: 'assistant',
+        content: `Here's an energetic drop section:\n\n\`\`\`ruby\n${TEMPLATES.drop}\n\`\`\`\n\nThe drop features:\n• **Heavy kick + snare** — driving four-on-the-floor beat\n• **Distorted bass** — detuned saw with grit\n• **Super saw lead** — adds width and energy\n\nUse this after a buildup for maximum impact. The contrast creates that "release" moment!`,
+      };
+    }
+
+    case 'generate_structure': {
+      return {
+        role: 'assistant',
+        content: `Here's a full song structure with verses and a drop:\n\n\`\`\`ruby\n${TEMPLATES.multiple_verses_with_drop}\n\`\`\`\n\n**Song Structure Tips:**\n\nIn PiBeat/Sonic Pi, you create structure by:\n1. **Running loops** — all \`live_loop\` blocks run concurrently\n2. **Using \`stop\`** — end a loop after N iterations\n3. **Hot-reloading** — modify and re-run to transition sections\n\n**Manual arrangement:**\n\`\`\`ruby\n# Verse for 16 beats, then start drop\nsleep 16\nlive_loop :drop do ...\n\`\`\`\n\nFor a professionally sequenced track, layer intro → verse → buildup → drop → verse → bridge → chorus → outro using the timestamps and \`stop\` commands.`,
+      };
+    }
+
     case 'refactor': {
       if (currentCode.trim().length < 10) {
         return {
@@ -488,6 +932,31 @@ export async function processAgentMessage(
         role: 'assistant',
         content: buildAnalysisResponse(analysis, currentCode),
       };
+    }
+
+    // ── Parity Analysis Handlers ──
+
+    case 'parity_check':
+    case 'parity_synths':
+    case 'parity_effects':
+    case 'parity_samples': {
+      if (currentCode.trim().length < 10) {
+        return {
+          role: 'assistant',
+          content: 'Your buffer is empty. Write some Sonic Pi code first, then I\'ll check its parity with the Sonic Pi IDE!',
+        };
+      }
+      return await runParityAnalysis(currentCode, intent);
+    }
+
+    case 'parity_fix': {
+      if (currentCode.trim().length < 10) {
+        return {
+          role: 'assistant',
+          content: 'Your buffer is empty. Write some code first, then I can suggest parity fixes!',
+        };
+      }
+      return await runParityFix(currentCode);
     }
 
     case 'add_fx': {
@@ -584,7 +1053,7 @@ function explainCode(code: string, analysis: CodeAnalysis): string {
   }
 
   if (analysis.issues.length > 0) {
-    explanations.push('\n**⚠️ Potential issues:**');
+    explanations.push('\n**Potential issues:**');
     analysis.issues.forEach(issue => explanations.push(`• ${issue}`));
   }
 
@@ -601,10 +1070,10 @@ function buildAnalysisResponse(analysis: CodeAnalysis, code: string): string {
   parts.push(`• **Effects:** ${analysis.usedFx.length > 0 ? [...new Set(analysis.usedFx)].map(f => `\`:${f}\``).join(', ') : 'None'}`);
 
   if (analysis.issues.length > 0) {
-    parts.push('\n**⚠️ Issues found:**');
+    parts.push('\n**Issues found:**');
     analysis.issues.forEach(issue => parts.push(`• ${issue}`));
   } else {
-    parts.push('\n✅ No issues detected — code looks good!');
+    parts.push('\nNo issues detected — code looks good!');
   }
 
   // Suggestions
@@ -623,7 +1092,7 @@ function buildAnalysisResponse(analysis: CodeAnalysis, code: string): string {
   }
 
   if (suggestions.length > 0) {
-    parts.push('\n**💡 Suggestions:**');
+    parts.push('\n**Suggestions:**');
     suggestions.forEach(s => parts.push(`• ${s}`));
   }
 
@@ -705,7 +1174,7 @@ function handleGeneralQuestion(message: string, analysis: CodeAnalysis, currentC
 
   // Greeting
   if (/^(hi|hello|hey|yo|sup|what's up|howdy)/i.test(m)) {
-    return 'Hey! 🎵 I\'m your PiBeat agent. I can:\n\n' +
+    return 'Hey! I\'m your PiBeat agent. I can:\n\n' +
       '• **Generate code** — beats, melodies, arps, full tracks\n' +
       '• **Refactor** your current code\n' +
       '• **Explain** what your code does\n' +
@@ -894,4 +1363,325 @@ function buildCompositionWithUserSamples(
     role: 'assistant',
     content: `Here's a ${intent === 'generate_full' ? 'full track' : 'beat'} using your samples:\n\n${desc}\n\n\`\`\`ruby\n${code}\n\`\`\`\n\nYou can preview any sample in the My Samples panel before using it.`,
   };
+}
+
+// ──────────────────────────────────────────────
+// Parity Analysis Engine
+// ──────────────────────────────────────────────
+
+/**
+ * Deep parity check — invokes the Rust validate_parity command to analyze
+ * the code's Sonic Pi compatibility and produce a detailed report
+ */
+async function runParityAnalysis(code: string, intent: Intent): Promise<AgentMessage> {
+  try {
+    const report = await invoke<ParityReport>('validate_parity', { code });
+    return { role: 'assistant', content: formatParityReport(report, intent) };
+  } catch (err: any) {
+    // Fallback: client-side static analysis when backend unavailable
+    return { role: 'assistant', content: runClientSideParityCheck(code, intent) };
+  }
+}
+
+/**
+ * Format the backend parity report into readable markdown
+ */
+function formatParityReport(report: ParityReport, intent: Intent): string {
+  const scorePercent = Math.round(report.score * 100);
+  const scoreEmoji = scorePercent >= 90 ? '🟢' : scorePercent >= 70 ? '🟡' : '🔴';
+  
+  const parts: string[] = [];
+  parts.push(`## ${scoreEmoji} Sonic Pi Parity: ${scorePercent}%\n`);
+  parts.push(`**Features used:** ${report.features_used} | **Supported:** ${report.features_supported} | **Partial:** ${report.features_partial} | **Unsupported:** ${report.features_unsupported}\n`);
+
+  // Filter categories based on intent
+  const categoriesToShow = intent === 'parity_synths' ? ['Synths']
+    : intent === 'parity_effects' ? ['Effects']
+    : intent === 'parity_samples' ? ['Sample Features']
+    : null; // show all
+
+  for (const cat of report.categories) {
+    if (categoriesToShow && !categoriesToShow.includes(cat.name)) continue;
+    if (cat.items.length === 0 && cat.status === 'unused') continue;
+    
+    const statusIcon = cat.status === 'full' ? '✅' : cat.status === 'partial' ? '⚠️' : cat.status === 'unsupported' ? '❌' : '—';
+    parts.push(`\n### ${statusIcon} ${cat.name}\n`);
+    
+    for (const item of cat.items) {
+      const icon = item.status === 'supported' ? '✅' : item.status === 'partial' ? '⚠️' : '❌';
+      parts.push(`${icon} \`${item.feature}\` — ${item.detail}`);
+    }
+  }
+
+  // Show suggestions
+  if (report.suggestions.length > 0) {
+    parts.push('\n### Suggestions\n');
+    for (const sug of report.suggestions) {
+      const icon = sug.severity === 'error' ? '❌' : sug.severity === 'warning' ? '⚠️' : 'ℹ️';
+      parts.push(`${icon} **${sug.feature}**: ${sug.message}`);
+      if (sug.fix) {
+        parts.push(`\n\`\`\`ruby\n${sug.fix}\n\`\`\``);
+      }
+    }
+  }
+
+  // Show parse warnings
+  if (report.warnings.length > 0) {
+    parts.push('\n### Parse Warnings\n');
+    for (const w of report.warnings) {
+      parts.push(`⚠️ ${w}`);
+    }
+  }
+
+  if (scorePercent >= 90) {
+    parts.push('\n---\n**Your code has excellent Sonic Pi parity!** All major features are fully supported.');
+  } else if (scorePercent >= 70) {
+    parts.push('\n---\n**Good parity.** Some features have partial support — see suggestions above for workarounds.');
+  } else {
+    parts.push('\n---\n**Some parity gaps detected.** Review the suggestions above, or ask me to **"fix parity"** for auto-applied workarounds.');
+  }
+
+  return parts.join('\n');
+}
+
+/**
+ * Client-side static parity analysis — fallback when Rust backend is not available
+ * Also used by LLM-based agents for context
+ */
+function runClientSideParityCheck(code: string, intent: Intent): string {
+  const lines = code.split('\n');
+  const issues: string[] = [];
+  const supported: string[] = [];
+  const synths: string[] = [];
+  const effects: string[] = [];
+  const samples: string[] = [];
+
+  // Fully supported synths in PiBeat
+  const supportedSynths = new Set([
+    'sine', 'beep', 'saw', 'dsaw', 'square', 'tri', 'triangle', 'noise', 'pulse',
+    'super_saw', 'tb303', 'prophet', 'blade', 'pluck', 'fm', 'mod_fm', 'mod_saw',
+    'mod_pulse', 'mod_tri', 'mod_sine', 'dark_ambience', 'hollow', 'growl',
+    'pretty_bell', 'dull_bell', 'chip_lead', 'chip_bass', 'chip_noise', 'tech_saws',
+    'hoover', 'zawa', 'dpulse', 'dtri', 'sub_pulse', 'piano', 'gabber_kick',
+    'bnoise', 'pnoise', 'gnoise', 'cnoise',
+  ]);
+
+  // Fully supported effects in PiBeat
+  const supportedFx = new Set([
+    'reverb', 'gverb', 'echo', 'delay', 'distortion', 'lpf', 'rlpf', 'hpf', 'rhpf',
+    'flanger', 'chorus', 'ring_mod', 'wobble', 'ixi_techno', 'octaver', 'pan',
+    'slicer', 'bitcrusher', 'krush', 'compressor', 'normaliser', 'normalizer',
+  ]);
+
+  // Unsupported constructs
+  const unsupportedPatterns: [RegExp, string, string | null][] = [
+    [/\bcontrol\s+\w/, '`control` is a no-op in PiBeat — use explicit notes with timing', '# Use: play :c4, sustain: 1\\nsleep 1\\nplay :e4, sustain: 9'],
+    [/\bshould_stop\?/, '`should_stop?` is a Ruby runtime feature not supported in PiBeat', null],
+    [/\bTime\.now/, '`Time.now` is not supported — use beat-based timing with `sleep`', null],
+    [/\blambda\b|\bproc\b|->\\s*{/, 'Lambdas/procs not supported — use `define :name do ... end`', 'define :my_func do\\n  # code here\\nend'],
+    [/\bdef\s+\w+/, 'Ruby `def` methods not supported — use `define :name do ... end`', null],
+    [/\.each_cons/, '`.each_cons` not supported — use explicit loops instead', null],
+    [/\bsync\s+:/, '`sync` is parsed but does not block — threads start immediately', 'Use separate live_loop blocks instead'],
+    [/\bcue\s+:/, '`cue` is parsed but does not trigger waiting threads', null],
+    [/\bwith_fx\s+:pitch_shift/, '`:pitch_shift` effect not implemented — use `rate:` param on samples', null],
+    [/\bwith_fx\s+:whammy/, '`:whammy` not implemented — try `with_fx :wobble` instead', null],
+    [/\bwith_fx\s+:band_eq/, '`:band_eq` not implemented — combine :lpf and :hpf instead', null],
+    [/\bwith_fx\s+:vowel/, '`:vowel` not implemented in PiBeat', null],
+    [/\bwith_fx\s+:tanh/, '`:tanh` not implemented — use `with_fx :distortion` instead', null],
+  ];
+
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i].trim();
+    if (line.startsWith('#') || line === '') continue;
+
+    // Extract synths
+    const synthMatch = line.match(/use_synth\s+:(\w+)/);
+    if (synthMatch) {
+      const s = synthMatch[1];
+      if (supportedSynths.has(s)) {
+        supported.push(`Synth :${s}`);
+        synths.push(s);
+      } else {
+        issues.push(`Line ${i + 1}: Synth \`:${s}\` may have limited parity`);
+        synths.push(s);
+      }
+    }
+
+    // Extract effects
+    const fxMatch = line.match(/with_fx\s+:(\w+)/);
+    if (fxMatch) {
+      const f = fxMatch[1];
+      if (supportedFx.has(f)) {
+        supported.push(`Effect :${f}`);
+        effects.push(f);
+      } else {
+        issues.push(`Line ${i + 1}: Effect \`:${f}\` not supported in PiBeat`);
+        effects.push(f);
+      }
+    }
+
+    // Extract samples
+    const sampleMatch = line.match(/sample\s+:(\w+)/);
+    if (sampleMatch) {
+      samples.push(sampleMatch[1]);
+    }
+
+    // Check unsupported patterns
+    for (const [pattern, message, fix] of unsupportedPatterns) {
+      if (pattern.test(line)) {
+        issues.push(`Line ${i + 1}: ${message}${fix ? '\\n  Fix: ' + fix : ''}`);
+      }
+    }
+  }
+
+  // Build report
+  const parts: string[] = [];
+  const total = synths.length + effects.length + issues.length;
+  const score = total > 0 ? Math.round(((total - issues.length) / total) * 100) : 100;
+  const scoreEmoji = score >= 90 ? '🟢' : score >= 70 ? '🟡' : '🔴';
+
+  parts.push(`## ${scoreEmoji} Sonic Pi Parity Analysis: ${score}%\n`);
+
+  // Filter by intent
+  if (intent !== 'parity_effects' && intent !== 'parity_samples') {
+    if (synths.length > 0) {
+      parts.push('### Synths');
+      for (const s of [...new Set(synths)]) {
+        const icon = supportedSynths.has(s) ? '✅' : '⚠️';
+        parts.push(`${icon} \`:${s}\``);
+      }
+      parts.push('');
+    }
+  }
+
+  if (intent !== 'parity_synths' && intent !== 'parity_samples') {
+    if (effects.length > 0) {
+      parts.push('### Effects');
+      for (const f of [...new Set(effects)]) {
+        const icon = supportedFx.has(f) ? '✅' : '❌';
+        parts.push(`${icon} \`:${f}\``);
+      }
+      parts.push('');
+    }
+  }
+
+  if (intent !== 'parity_synths' && intent !== 'parity_effects') {
+    if (samples.length > 0) {
+      parts.push(`### Samples: ${[...new Set(samples)].length} unique samples used ✅`);
+      parts.push('');
+    }
+  }
+
+  if (issues.length > 0) {
+    parts.push('### Issues Found\n');
+    for (const issue of issues) {
+      parts.push(`⚠️ ${issue}`);
+    }
+  } else {
+    parts.push('**No parity issues detected.** Your code uses fully supported features.\n');
+  }
+
+  parts.push('\n---');
+  if (issues.length > 0) {
+    parts.push('Ask me to **"fix parity"** to get auto-applied workarounds for these issues.');
+  } else {
+    parts.push('Your code has excellent Sonic Pi parity!');
+  }
+
+  return parts.join('\n');
+}
+
+/**
+ * Auto-fix parity issues in the user's code
+ */
+async function runParityFix(code: string): Promise<AgentMessage> {
+  let fixed = code;
+  const changes: string[] = [];
+
+  // Fix 1: Replace unsupported effects with alternatives
+  const fxReplacements: [RegExp, string, string][] = [
+    [/with_fx\s+:pitch_shift\b/g, 'with_fx :lpf', 'Replaced `:pitch_shift` with `:lpf` (use `rate:` on samples for pitch)'],
+    [/with_fx\s+:whammy\b/g, 'with_fx :wobble', 'Replaced `:whammy` with `:wobble`'],
+    [/with_fx\s+:band_eq\b/g, 'with_fx :lpf', 'Replaced `:band_eq` with `:lpf` (combine with :hpf for band)'],
+    [/with_fx\s+:tanh\b/g, 'with_fx :distortion', 'Replaced `:tanh` with `:distortion` (soft clipping)'],
+    [/with_fx\s+:vowel\b/g, 'with_fx :lpf', 'Replaced `:vowel` with `:lpf` (formant-like filtering)'],
+  ];
+
+  for (const [pattern, replacement, desc] of fxReplacements) {
+    if (pattern.test(fixed)) {
+      fixed = fixed.replace(pattern, replacement);
+      changes.push(desc);
+    }
+  }
+
+  // Fix 2: Replace `def method_name` with `define :method_name do`
+  const defMatch = fixed.match(/\bdef\s+(\w+)/);
+  if (defMatch) {
+    fixed = fixed.replace(/\bdef\s+(\w+)/, 'define :$1 do');
+    changes.push(`Replaced Ruby \`def ${defMatch[1]}\` with \`define :${defMatch[1]} do\``);
+  }
+
+  // Fix 3: Warn about control (can't auto-fix — needs manual rewrite)
+  if (/\bcontrol\s+\w/.test(fixed)) {
+    changes.push('**Manual fix needed:** `control` is a no-op. Rewrite as explicit `play` calls with timing:');
+    changes.push('```ruby\n# Instead of: control s, note: :e4\nplay :c4, sustain: 1\nsleep 1\nplay :e4, sustain: 9\n```');
+  }
+
+  // Fix 4: Replace lambda/proc with define
+  if (/\b(lambda|proc)\s*\{/.test(fixed)) {
+    changes.push('**Manual fix needed:** Replace lambda/proc with `define :name do ... end`');
+  }
+
+  // Fix 5: Warn about sync/cue
+  if (/\bsync\s+:/.test(fixed)) {
+    changes.push('**Note:** `sync` is parsed but does not block threads. Use separate `live_loop` blocks for concurrent patterns.');
+  }
+
+  if (changes.length === 0) {
+    return {
+      role: 'assistant',
+      content: '✅ **No parity fixes needed!** Your code uses fully supported Sonic Pi features in PiBeat.',
+    };
+  }
+
+  const changeList = changes.map(c => `• ${c}`).join('\n');
+  return {
+    role: 'assistant',
+    content: `## Parity Fixes Applied\n\n${changeList}\n\n\`\`\`ruby\n${fixed}\n\`\`\`\n\nReview the changes above. Click **Insert** to add to your buffer or **Replace** to update.`,
+  };
+}
+
+/**
+ * Exported for use by LLM agents — provides parity context for the system prompt
+ */
+export function getParityContext(): string {
+  return `## PiBeat Sound Parity Status
+
+### Fully Supported (100% parity):
+- **42 synths**: sine, saw, square, triangle, noise, pulse, super_saw, tb303, prophet, blade, pluck, fm, beep, dark_ambience, hollow, growl, pretty_bell, dull_bell, chip_lead, chip_bass, chip_noise, tech_saws, hoover, zawa, mod_fm, mod_sine, mod_saw, mod_tri, mod_pulse, dsaw, dpulse, dtri, sub_pulse, gabber_kick, piano, bnoise, pnoise, gnoise, cnoise
+- **22 effects**: reverb, gverb, echo, delay, distortion, lpf, rlpf, hpf, rhpf, flanger, chorus, ring_mod, wobble, ixi_techno, octaver, pan, slicer, bitcrusher, krush, compressor, normaliser, normalizer
+- **Sample params**: amp, rate, pan, pitch, rpitch, sustain, beat_stretch, start, finish, lpf, hpf, attack/decay/sustain_level/release
+- **Language**: live_loop, in_thread, .times do, while, define, set/get, if/else, ring, spread, choose, rrand, rand, dice, one_in, at, time_warp
+
+### Partial Support (⚠️):
+- **sync/cue**: Parsed but threads start immediately (workaround: use separate live_loops)
+- **control**: Parsed but no-op (workaround: use explicit play + sleep)
+- **.tick/.look**: Counter-based cycling approximation
+- **sync: param on live_loop**: Parsed but not enforced
+
+### Not Supported (❌):
+- **Ruby runtime**: should_stop?, Time.now, lambda, proc, def methods
+- **Effects**: pitch_shift, whammy, band_eq, tanh, vowel
+- **Live reload**: Code changes require stop/start
+- **Multi-variable block params**: |a, b|
+
+### Effect Defaults Reference:
+- reverb: mix=0.4, room=0.6, damp=0.5
+- echo/delay: phase=0.25 beats, decay=2, mix=1
+- distortion: distort=0.5, mix=1
+- lpf: cutoff=100 MIDI, res=0
+- hpf: cutoff=60 MIDI, res=0
+- bitcrusher/krush: bits=10, sr=10000, mix=1
+
+When generating code, always use fully supported features. For parity issues, suggest workarounds.`;
 }

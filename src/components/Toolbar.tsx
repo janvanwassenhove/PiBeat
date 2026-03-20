@@ -3,6 +3,7 @@ import { useStore } from '../store';
 import {
   FaPlay,
   FaStop,
+  FaPause,
   FaCircle,
   FaSquare,
   FaSave,
@@ -16,21 +17,35 @@ import {
 } from 'react-icons/fa';
 
 const FaWaveSquare = () => <span style={{fontSize: '14px'}}>~</span>;
-const FaKeyboard = () => <span style={{fontSize: '14px'}}>🎹</span>;
+const FaKeyboard = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+    <rect x="1" y="4" width="14" height="9" rx="1.5" />
+    <line x1="4" y1="7" x2="5" y2="7" /><line x1="7" y1="7" x2="8" y2="7" /><line x1="10" y1="7" x2="11" y2="7" />
+    <line x1="4" y1="10" x2="11" y2="10" />
+  </svg>
+);
 const FaSuperCollider = () => <span style={{fontSize: '14px', fontWeight: 'bold'}}>SC</span>;
+const FaBandIcon = () => (
+  <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" strokeWidth="1.2" strokeLinecap="round" strokeLinejoin="round">
+    <circle cx="5" cy="5" r="2" /><line x1="5" y1="7" x2="5" y2="12" />
+    <circle cx="11" cy="5" r="2" /><line x1="11" y1="7" x2="11" y2="12" />
+    <line x1="3" y1="10" x2="7" y2="10" /><line x1="9" y1="10" x2="13" y2="10" />
+  </svg>
+);
 
 const Toolbar: React.FC = () => {
   const {
     isPlaying,
+    isPaused,
     isRecording,
     masterVolume,
-    bpm,
     scStatus,
     theme,
     runCode,
     stopAudio,
+    pauseAudio,
+    resumeAudio,
     setVolume,
-    setBpm,
     startRecording,
     stopRecording,
     toggleSampleBrowser,
@@ -40,6 +55,7 @@ const Toolbar: React.FC = () => {
     toggleAgentChat,
     toggleCuePanel,
     toggleUserSamplePanel,
+    toggleBandVisualizer,
     showSampleBrowser,
     showSynthBrowser,
     showEffectsPanel,
@@ -47,6 +63,7 @@ const Toolbar: React.FC = () => {
     showAgentChat,
     showCuePanel,
     showUserSamplePanel,
+    showBandVisualizer,
     initSuperCollider,
     toggleScEngine,
     fetchScStatus,
@@ -73,16 +90,25 @@ const Toolbar: React.FC = () => {
         <button
           className={`toolbar-btn run-btn ${isPlaying ? 'playing' : ''}`}
           onClick={runCode}
-          title="Run (Alt+R)"
+          title="Run (Ctrl+Enter / Alt+R)"
         >
           <FaPlay /> Run
         </button>
         <button
           className="toolbar-btn stop-btn"
           onClick={stopAudio}
-          title="Stop (Alt+S)"
+          title="Stop (Ctrl+. / Alt+S)"
         >
           <FaStop /> Stop
+        </button>
+        <button
+          className={`toolbar-btn pause-btn ${isPaused ? 'paused' : ''}`}
+          onClick={isPaused ? resumeAudio : pauseAudio}
+          disabled={!isPlaying}
+          title={isPaused ? 'Resume' : 'Pause'}
+        >
+          {isPaused ? <FaPlay /> : <FaPause />}
+          {isPaused ? 'Resume' : 'Pause'}
         </button>
 
         <div className="toolbar-separator" />
@@ -90,7 +116,7 @@ const Toolbar: React.FC = () => {
         <button
           className={`toolbar-btn rec-btn ${isRecording ? 'recording' : ''}`}
           onClick={isRecording ? () => stopRecording() : startRecording}
-          title={isRecording ? 'Stop Recording (Alt+Shift+R)' : 'Start Recording (Alt+Shift+R)'}
+          title={isRecording ? 'Stop Recording (Ctrl+Shift+R)' : 'Start Recording (Ctrl+Shift+R)'}
         >
           {isRecording ? <FaSquare /> : <FaCircle />}
           {isRecording ? 'Stop Rec' : 'Rec'}
@@ -125,17 +151,6 @@ const Toolbar: React.FC = () => {
           <span className="control-value">{Math.round(masterVolume * 100)}%</span>
         </div>
 
-        <div className="control-group">
-          <label>BPM</label>
-          <input
-            type="number"
-            min="20"
-            max="300"
-            value={bpm}
-            onChange={(e) => setBpm(parseInt(e.target.value) || 120)}
-            className="bpm-input"
-          />
-        </div>
       </div>
 
       <div className="toolbar-group toolbar-panels">
@@ -180,6 +195,13 @@ const Toolbar: React.FC = () => {
           title="My Samples"
         >
           <FaFolderOpen />
+        </button>
+        <button
+          className={`toolbar-btn panel-btn ${showBandVisualizer ? 'panel-btn-active' : ''}`}
+          onClick={toggleBandVisualizer}
+          title="Band Visualizer"
+        >
+          <FaBandIcon />
         </button>
         <button
           className={`toolbar-btn panel-btn ${showCuePanel ? 'panel-btn-active' : ''}`}

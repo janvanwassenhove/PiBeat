@@ -1,5 +1,6 @@
 ﻿import React, { useEffect, useState, useRef } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { listen } from "@tauri-apps/api/event";
 import Toolbar from "./components/Toolbar";
 import BufferTabs from "./components/BufferTabs";
 import CodeEditor from "./components/CodeEditor";
@@ -13,6 +14,7 @@ import HelpPanel from "./components/HelpPanel";
 import AgentChat from "./components/AgentChat";
 import CuePanel from "./components/CuePanel";
 import UserSamplePanel from "./components/UserSamplePanel";
+import BandControlPanel from "./components/BandControlPanel";
 import { useStore, AppTheme } from "./store";
 import "./App.css";
 
@@ -76,7 +78,7 @@ const ThemeSwitcher: React.FC<{ theme: AppTheme; setTheme: (t: AppTheme) => void
 };
 
 const App: React.FC = () => {
-  const { fetchSamples, fetchStatus, loadUserSamplesDir, showSampleBrowser, showSynthBrowser, showEffectsPanel, showHelp, showAgentChat, showCuePanel, showUserSamplePanel, viewMode, theme, setTheme } = useStore();
+  const { fetchSamples, fetchStatus, loadUserSamplesDir, showSampleBrowser, showSynthBrowser, showEffectsPanel, showHelp, showAgentChat, showCuePanel, showUserSamplePanel, showBandVisualizer, detachedPanels, viewMode, theme, setTheme } = useStore();
 
   useEffect(() => {
     fetchSamples();
@@ -87,6 +89,81 @@ const App: React.FC = () => {
     return () => clearInterval(interval);
   }, [fetchSamples, fetchStatus, loadUserSamplesDir]);
 
+  // Global keyboard shortcuts (capture phase so they fire before Monaco Editor)
+  // Uses useStore.getState() to avoid stale closures and e.code for reliable key detection on Windows
+  useEffect(() => {
+    const handleKeyDown = (e: KeyboardEvent) => {
+      // Ctrl+S (no shift): Save file
+      if ((e.ctrlKey || e.metaKey) && !e.shiftKey && e.code === 'KeyS') {
+        e.preventDefault();
+        useStore.getState().saveBufferToFile();
+        return;
+      }
+      // Ctrl+O: Open file
+      if ((e.ctrlKey || e.metaKey) && e.code === 'KeyO') {
+        e.preventDefault();
+        useStore.getState().loadBufferFromFile();
+        return;
+      }
+      // Ctrl+Shift+R or Alt+Shift+R: Toggle recording
+      if (e.shiftKey && e.code === 'KeyR' && (e.ctrlKey || e.metaKey || e.altKey)) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        const state = useStore.getState();
+        if (state.isRecording) {
+          state.stopRecording();
+        } else {
+          state.startRecording();
+        }
+        return;
+      }
+      // Ctrl+Enter or Alt+R: Run code
+      if (((e.ctrlKey || e.metaKey) && e.code === 'Enter') || (e.altKey && !e.shiftKey && e.code === 'KeyR')) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        useStore.getState().runCode();
+        return;
+      }
+      // Ctrl+. or Alt+S: Stop audio
+      if (((e.ctrlKey || e.metaKey) && e.code === 'Period') || (e.altKey && e.code === 'KeyS')) {
+        e.preventDefault();
+        e.stopPropagation();
+        e.stopImmediatePropagation();
+        useStore.getState().stopAudio();
+        return;
+      }
+    };
+    window.addEventListener('keydown', handleKeyDown, true);
+    return () => window.removeEventListener('keydown', handleKeyDown, true);
+  }, []);
+
+  // Native OS-level global shortcuts (Alt+R, Alt+S, Alt+Shift+R)
+  // Registered from Rust at plugin init to avoid React StrictMode double-mount race conditions
+  useEffect(() => {
+    let unlisten: (() => void) | undefined;
+    listen<string>('global-shortcut', (event) => {
+      const shortcut = event.payload.toLowerCase();
+      if (shortcut.includes('shift') && shortcut.includes('r')) {
+        // Alt+Shift+R: Toggle recording
+        const state = useStore.getState();
+        if (state.isRecording) {
+          state.stopRecording();
+        } else {
+          state.startRecording();
+        }
+      } else if (shortcut.includes('r')) {
+        // Alt+R: Run code
+        useStore.getState().runCode();
+      } else if (shortcut.includes('s')) {
+        // Alt+S: Stop audio
+        useStore.getState().stopAudio();
+      }
+    }).then((fn) => { unlisten = fn; });
+    return () => { unlisten?.(); };
+  }, []);
+
   // Apply theme data attribute to root element
   useEffect(() => {
     if (theme === 'pibeat') {
@@ -96,7 +173,42 @@ const App: React.FC = () => {
     }
   }, [theme]);
 
-  const hasSidePanel = showSampleBrowser || showSynthBrowser || showEffectsPanel || showHelp || showAgentChat || showCuePanel || showUserSamplePanel;
+  // Listen for cross-window events from detached panel windows
+  useEffect(() => {
+    let unlistenInsert: (() => void) | undefined;
+    let unlistenAttach: (() => void) | undefined;
+
+    // Panel window wants to insert code into the active buffer
+    listen<{ id: number; code: string }>('panel-insert-code', (event) => {
+      const { id, code } = event.payload;
+      useStore.getState().updateBufferCode(id, code);
+    }).then((fn) => { unlistenInsert = fn; });
+
+    // Panel window wants to re-attach to the side panel
+    listen<{ panelId: string }>('panel-attach', (event) => {
+      const { panelId: pid } = event.payload;
+      const state = useStore.getState();
+      if (state.detachedPanels[pid]) {
+        state.toggleDetachPanel(pid);
+      }
+    }).then((fn) => { unlistenAttach = fn; });
+
+    return () => {
+      unlistenInsert?.();
+      unlistenAttach?.();
+    };
+  }, []);
+
+  const dp = detachedPanels || {};
+  const hasAttachedPanel =
+    (showSampleBrowser && !dp.sampleBrowser) ||
+    (showSynthBrowser && !dp.synthBrowser) ||
+    (showEffectsPanel && !dp.effectsPanel) ||
+    (showHelp && !dp.helpPanel) ||
+    (showAgentChat && !dp.agentChat) ||
+    (showCuePanel && !dp.cuePanel) ||
+    (showUserSamplePanel && !dp.userSamplePanel) ||
+    (showBandVisualizer && !dp.bandVisualizer);
 
   const appWindow = getCurrentWindow();
 
@@ -136,7 +248,7 @@ const App: React.FC = () => {
       </div>
 
       <div className="app-body">
-        <div className={`main-area ${hasSidePanel ? "with-panel" : ""}`}>
+        <div className={`main-area ${hasAttachedPanel ? "with-panel" : ""}`}>
           <div className="editor-section">
             <BufferTabs />
             {viewMode === 'code' ? <CodeEditor /> : <TimelineView />}
@@ -147,8 +259,7 @@ const App: React.FC = () => {
           </div>
         </div>
 
-        {hasSidePanel && (
-          <div className="side-panel-area">
+        <div className={`side-panel-area${!hasAttachedPanel ? ' side-panel-area--hidden' : ''}`}>
             <SampleBrowser />
             <SynthBrowser />
             <EffectsPanel />
@@ -156,14 +267,14 @@ const App: React.FC = () => {
             <AgentChat />
             <CuePanel />
             <UserSamplePanel />
-          </div>
-        )}
+            <BandControlPanel visible={showBandVisualizer} />
+        </div>
       </div>
 
       <div className="app-footer">
         <span className="footer-info">PiBeat v0.1.0</span>
         <span className="footer-keys">
-          <kbd>Alt+R</kbd> Run | <kbd>Alt+S</kbd> Stop | <kbd>Alt+Shift+R</kbd> Record
+          <kbd>Ctrl+Enter</kbd> Run | <kbd>Alt+S</kbd> Stop | <kbd>Ctrl+Shift+R</kbd> Record | <kbd>Ctrl+S</kbd> Save | <kbd>Ctrl+O</kbd> Open
         </span>
       </div>
     </div>

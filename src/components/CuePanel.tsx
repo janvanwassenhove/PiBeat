@@ -1,9 +1,10 @@
 import React, { useEffect, useRef } from 'react';
 import { useStore } from '../store';
 import { FaTrash, FaBullseye, FaPlay } from 'react-icons/fa';
+import DetachablePanel from './DetachablePanel';
 
 const CuePanel: React.FC = () => {
-  const { cueEvents, clearCues, showCuePanel } = useStore();
+  const { cueEvents, clearCues, showCuePanel, toggleCuePanel } = useStore();
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {
@@ -29,20 +30,24 @@ const CuePanel: React.FC = () => {
   };
 
   return (
-    <div className="cue-panel">
-      <div className="cue-header">
-        <span className="cue-title">
-          <FaBullseye /> Cues
-        </span>
+    <DetachablePanel
+      panelId="cuePanel"
+      title="Cues"
+      icon={<FaBullseye />}
+      onClose={toggleCuePanel}
+      className="cue-panel"
+      defaultHeight={400}
+      headerActions={
         <button 
-          className="cue-clear-btn" 
+          className="close-btn" 
           onClick={clearCues} 
           title="Clear All Cues"
           disabled={cueEvents.length === 0}
         >
           <FaTrash />
         </button>
-      </div>
+      }
+    >
       <div className="cue-content" ref={containerRef}>
         {cueEvents.length === 0 && (
           <div className="cue-empty">
@@ -81,7 +86,7 @@ const CuePanel: React.FC = () => {
           {cueEvents.length} {cueEvents.length === 1 ? 'cue' : 'cues'}
         </div>
       </div>
-    </div>
+    </DetachablePanel>
   );
 };
 

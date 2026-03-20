@@ -1,9 +1,10 @@
-import React, { useEffect, useState, useMemo } from 'react';
+import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useStore, UserSampleInfo } from '../store';
+import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
   FaPlay,
-  FaTimes,
+  FaStop,
   FaFolderOpen,
   FaSync,
   FaChevronRight,
@@ -13,7 +14,79 @@ import {
   FaMusic,
   FaTags,
   FaPlus,
+  FaDrum,
+  FaMicrophone,
+  FaGuitar,
+  FaWater,
+  FaMagic,
+  FaRedoAlt,
+  FaBolt,
+  FaQuestionCircle,
+  FaFolder,
 } from 'react-icons/fa';
+import DetachablePanel from './DetachablePanel';
+
+// ── Mini Waveform Component ──
+const SampleWaveform: React.FC<{
+  peaks: number[];
+  progress: number; // 0..1
+  isPlaying: boolean;
+  onClick?: (ratio: number) => void;
+}> = React.memo(({ peaks, progress, isPlaying, onClick }) => {
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas || peaks.length === 0) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+
+    const dpr = window.devicePixelRatio || 1;
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+    canvas.width = w * dpr;
+    canvas.height = h * dpr;
+    ctx.scale(dpr, dpr);
+
+    ctx.clearRect(0, 0, w, h);
+    const barWidth = w / peaks.length;
+    const mid = h / 2;
+
+    for (let i = 0; i < peaks.length; i++) {
+      const x = i * barWidth;
+      const amp = peaks[i] * mid * 0.9;
+      const isPast = isPlaying && (i / peaks.length) < progress;
+      ctx.fillStyle = isPast ? '#4488ff' : 'rgba(255,255,255,0.25)';
+      ctx.fillRect(x, mid - amp, Math.max(barWidth - 0.5, 1), amp * 2 || 1);
+    }
+
+    // Draw playhead
+    if (isPlaying && progress > 0 && progress < 1) {
+      const px = progress * w;
+      ctx.strokeStyle = '#4488ff';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.moveTo(px, 0);
+      ctx.lineTo(px, h);
+      ctx.stroke();
+    }
+  }, [peaks, progress, isPlaying]);
+
+  const handleClick = (e: React.MouseEvent<HTMLCanvasElement>) => {
+    if (!onClick) return;
+    const rect = e.currentTarget.getBoundingClientRect();
+    const ratio = (e.clientX - rect.left) / rect.width;
+    onClick(Math.max(0, Math.min(1, ratio)));
+  };
+
+  return (
+    <canvas
+      ref={canvasRef}
+      className="user-sample-waveform-canvas"
+      onClick={handleClick}
+    />
+  );
+});
 
 type GroupBy = 'folder' | 'type' | 'feeling' | 'tag';
 type SortBy = 'name' | 'duration' | 'bpm' | 'type';
@@ -23,11 +96,14 @@ const UserSamplePanel: React.FC = () => {
     userSamples,
     userSamplesDir,
     userSamplesLoading,
+    userSamplesScanProgress,
     showUserSamplePanel,
     toggleUserSamplePanel,
     setUserSamplesDir,
     scanUserSamples,
+    fullRescanUserSamples,
     playSampleFile,
+    stopAudio,
     updateBufferCode,
     buffers,
     activeBufferId,
@@ -40,9 +116,94 @@ const UserSamplePanel: React.FC = () => {
   const [selectedTags, setSelectedTags] = useState<string[]>([]);
   const [expandedSample, setExpandedSample] = useState<string | null>(null);
 
-  // Load saved dir on mount
+  // Playing state
+  const [playingSample, setPlayingSample] = useState<string | null>(null);
+  const [playProgress, setPlayProgress] = useState(0);
+  const playTimerRef = useRef<number | null>(null);
+  const playStartRef = useRef<number>(0);
+
+  // Waveform peaks cache
+  const [peaksCache, setPeaksCache] = useState<Record<string, number[]>>({});
+
+  // Fetch peaks when sample is expanded or visible
+  const fetchPeaks = useCallback(async (path: string) => {
+    if (peaksCache[path]) return;
+    try {
+      const peaks = await invoke<number[]>('get_sample_peaks', { path, numPeaks: 100 });
+      setPeaksCache((prev) => ({ ...prev, [path]: peaks }));
+    } catch (e) {
+      console.error('[UserSamplePanel] Failed to get peaks:', e);
+    }
+  }, [peaksCache]);
+
+  // Auto-fetch peaks for expanded sample
   useEffect(() => {
-    if (showUserSamplePanel && userSamplesDir && userSamples.length === 0) {
+    if (expandedSample) {
+      fetchPeaks(expandedSample);
+    }
+  }, [expandedSample]);
+
+  // Cleanup play timer on unmount
+  useEffect(() => {
+    return () => {
+      if (playTimerRef.current) cancelAnimationFrame(playTimerRef.current);
+    };
+  }, []);
+
+  // Play/pause toggle
+  const handlePlayPause = useCallback(async (sample: UserSampleInfo) => {
+    if (playingSample === sample.path) {
+      // Stop playing
+      await stopAudio();
+      setPlayingSample(null);
+      setPlayProgress(0);
+      if (playTimerRef.current) {
+        cancelAnimationFrame(playTimerRef.current);
+        playTimerRef.current = null;
+      }
+    } else {
+      // Stop previous if any
+      if (playingSample) {
+        await stopAudio();
+        if (playTimerRef.current) {
+          cancelAnimationFrame(playTimerRef.current);
+          playTimerRef.current = null;
+        }
+      }
+      // Start playing new
+      await playSampleFile(sample.path);
+      setPlayingSample(sample.path);
+      setPlayProgress(0);
+      playStartRef.current = performance.now();
+      const durationMs = sample.duration_secs * 1000;
+
+      // Fetch peaks if not cached
+      fetchPeaks(sample.path);
+
+      // Animate progress
+      const animate = () => {
+        const elapsed = performance.now() - playStartRef.current;
+        const prog = Math.min(elapsed / durationMs, 1);
+        setPlayProgress(prog);
+        if (prog < 1) {
+          playTimerRef.current = requestAnimationFrame(animate);
+        } else {
+          setPlayingSample(null);
+          setPlayProgress(0);
+          playTimerRef.current = null;
+        }
+      };
+      playTimerRef.current = requestAnimationFrame(animate);
+    }
+  }, [playingSample, playSampleFile, stopAudio, fetchPeaks]);
+
+  // On mount / panel open: scan only if we have no cached data yet
+  const hasScannedRef = useRef(false);
+  useEffect(() => {
+    if (showUserSamplePanel && userSamplesDir && !hasScannedRef.current) {
+      hasScannedRef.current = true;
+      // Background scan to detect new/changed/removed files.
+      // If everything is cached, this completes silently without loading UI.
       scanUserSamples();
     }
   }, [showUserSamplePanel]);
@@ -176,16 +337,16 @@ const UserSamplePanel: React.FC = () => {
     return `${m}:${s.toString().padStart(2, '0')}`;
   };
 
-  const typeEmoji: Record<string, string> = {
-    drums: '🥁',
-    vocal: '🎤',
-    instrumental: '🎸',
-    bass: '🎵',
-    pad: '🌊',
-    fx: '✨',
-    loop: '🔁',
-    'one-shot': '💥',
-    unknown: '❓',
+  const typeIcon: Record<string, React.ReactNode> = {
+    drums: <FaDrum />,
+    vocal: <FaMicrophone />,
+    instrumental: <FaGuitar />,
+    bass: <FaMusic />,
+    pad: <FaWater />,
+    fx: <FaMagic />,
+    loop: <FaRedoAlt />,
+    'one-shot': <FaBolt />,
+    unknown: <FaQuestionCircle />,
   };
 
   const feelingColor: Record<string, string> = {
@@ -199,16 +360,15 @@ const UserSamplePanel: React.FC = () => {
   };
 
   return (
-    <div className="side-panel user-sample-panel">
-      <div className="panel-header">
-        <h3>
-          <FaFolderOpen /> My Samples
-        </h3>
-        <button className="close-btn" onClick={toggleUserSamplePanel}>
-          <FaTimes />
-        </button>
-      </div>
-
+    <DetachablePanel
+      panelId="userSamplePanel"
+      title="My Samples"
+      icon={<FaFolderOpen />}
+      onClose={toggleUserSamplePanel}
+      className="user-sample-panel"
+      defaultWidth={350}
+      defaultHeight={550}
+    >
       <div className="panel-content">
         {/* Folder selection */}
         <div className="user-sample-folder-section">
@@ -225,9 +385,19 @@ const UserSamplePanel: React.FC = () => {
               className="user-sample-rescan-btn"
               onClick={scanUserSamples}
               disabled={userSamplesLoading}
-              title="Rescan folder"
+              title="Scan for changes"
             >
               <FaSync className={userSamplesLoading ? 'spinning' : ''} />
+            </button>
+          )}
+          {userSamplesDir && (
+            <button
+              className="user-sample-rescan-btn user-sample-fullrescan-btn"
+              onClick={fullRescanUserSamples}
+              disabled={userSamplesLoading}
+              title="Full rescan — clear cache and re-analyze all files"
+            >
+              <FaSync className={userSamplesLoading ? 'spinning' : ''} /> All
             </button>
           )}
         </div>
@@ -239,7 +409,35 @@ const UserSamplePanel: React.FC = () => {
           </div>
         )}
 
-        {userSamplesLoading && (
+        {userSamplesLoading && userSamplesScanProgress && (
+          <div className="user-sample-progress">
+            <div className="user-sample-progress-header">
+              <FaSync className="spinning" />
+              <span>
+                {userSamplesScanProgress.phase === 'discovering'
+                  ? 'Discovering files...'
+                  : `Analyzing ${userSamplesScanProgress.scanned} / ${userSamplesScanProgress.total} samples`}
+              </span>
+            </div>
+            {userSamplesScanProgress.total > 0 && (
+              <div className="user-sample-progress-bar">
+                <div
+                  className="user-sample-progress-fill"
+                  style={{
+                    width: `${Math.round((userSamplesScanProgress.scanned / userSamplesScanProgress.total) * 100)}%`,
+                  }}
+                />
+              </div>
+            )}
+            {userSamplesScanProgress.phase === 'analyzing' && userSamplesScanProgress.total > 0 && (
+              <div className="user-sample-progress-pct">
+                {Math.round((userSamplesScanProgress.scanned / userSamplesScanProgress.total) * 100)}%
+              </div>
+            )}
+          </div>
+        )}
+
+        {userSamplesLoading && !userSamplesScanProgress && (
           <div className="user-sample-loading">
             <FaSync className="spinning" /> Scanning and analyzing samples...
           </div>
@@ -331,51 +529,72 @@ const UserSamplePanel: React.FC = () => {
                     onClick={() => toggleGroup(group)}
                   >
                     <span className="category-chevron">
-                      {collapsedGroups[group] ? (
-                        <FaChevronRight />
-                      ) : (
+                      {collapsedGroups[group] === false ? (
                         <FaChevronDown />
+                      ) : (
+                        <FaChevronRight />
                       )}
                     </span>
-                    <span>{typeEmoji[group] || '📁'} {group}</span>
+                    <span className="category-icon">{typeIcon[group] || <FaFolder />}</span>
+                    <span>{group}</span>
                     <span className="category-count">{items.length}</span>
                   </h4>
-                  {!collapsedGroups[group] && (
+                  {collapsedGroups[group] === false && (
                     <div className="sample-list">
-                      {items.map((sample) => (
+                      {items.map((sample) => {
+                        const isAnalyzed = sample.duration_secs > 0 || sample.audio_type !== 'unknown';
+                        const isCurrPlaying = playingSample === sample.path;
+                        const peaks = peaksCache[sample.path];
+                        return (
                         <div
                           key={sample.path}
-                          className="user-sample-item"
+                          className={`user-sample-item${!isAnalyzed ? ' user-sample-pending' : ''}${isCurrPlaying ? ' user-sample-playing' : ''}`}
                         >
                           <div className="user-sample-item-main">
+                            <button
+                              className={`sample-play-btn user-sample-play-toggle${isCurrPlaying ? ' playing' : ''}`}
+                              onClick={() => handlePlayPause(sample)}
+                              title={isCurrPlaying ? 'Stop' : 'Play'}
+                            >
+                              {isCurrPlaying ? <FaStop /> : <FaPlay />}
+                            </button>
                             <div className="user-sample-item-info">
                               <span className="sample-name">{sample.name}</span>
+                              {/* Inline mini waveform */}
+                              {isAnalyzed && peaks && (
+                                <div className="user-sample-waveform-row">
+                                  <SampleWaveform
+                                    peaks={peaks}
+                                    progress={isCurrPlaying ? playProgress : 0}
+                                    isPlaying={isCurrPlaying}
+                                  />
+                                </div>
+                              )}
                               <div className="user-sample-meta">
-                                <span className="user-sample-meta-item" title="Duration">
-                                  <FaClock /> {formatDuration(sample.duration_secs)}
-                                </span>
-                                {sample.bpm_estimate && (
-                                  <span className="user-sample-meta-item" title="Estimated BPM">
-                                    <FaMusic /> {Math.round(sample.bpm_estimate)} BPM
+                                {isAnalyzed ? (
+                                  <>
+                                    <span className="user-sample-meta-item" title="Duration">
+                                      <FaClock /> {formatDuration(sample.duration_secs)}
+                                    </span>
+                                    {sample.bpm_estimate && (
+                                      <span className="user-sample-meta-item" title="Estimated BPM">
+                                        <FaMusic /> {Math.round(sample.bpm_estimate)} BPM
+                                      </span>
+                                    )}
+                                    <span
+                                      className="user-sample-meta-item user-sample-feeling"
+                                      style={{ color: feelingColor[sample.feeling] || '#888' }}
+                                      title={`Mood: ${sample.feeling}`}
+                                    >
+                                      {sample.feeling}
+                                    </span>
+                                  </>
+                                ) : (
+                                  <span className="user-sample-meta-item user-sample-analyzing">
+                                    analyzing…
                                   </span>
-                                )}
-                                <span
-                                  className="user-sample-meta-item user-sample-feeling"
-                                  style={{ color: feelingColor[sample.feeling] || '#888' }}
-                                  title={`Mood: ${sample.feeling}`}
-                                >
-                                  {sample.feeling}
-                                </span>
-                              </div>
-                            </div>
+                                )}</div></div>
                             <div className="sample-actions user-sample-actions-visible">
-                              <button
-                                className="sample-play-btn"
-                                onClick={() => playSampleFile(sample.path)}
-                                title="Preview"
-                              >
-                                <FaPlay />
-                              </button>
                               <button
                                 className="sample-insert-btn"
                                 onClick={() => insertSample(sample)}
@@ -398,6 +617,16 @@ const UserSamplePanel: React.FC = () => {
                           </div>
                           {expandedSample === sample.path && (
                             <div className="user-sample-details">
+                              {/* Large waveform */}
+                              {peaks && (
+                                <div className="user-sample-waveform-large">
+                                  <SampleWaveform
+                                    peaks={peaks}
+                                    progress={isCurrPlaying ? playProgress : 0}
+                                    isPlaying={isCurrPlaying}
+                                  />
+                                </div>
+                              )}
                               <div className="user-sample-detail-row">
                                 <span className="detail-label">Type:</span>
                                 <span>{sample.audio_type}</span>
@@ -438,7 +667,7 @@ const UserSamplePanel: React.FC = () => {
                             </div>
                           )}
                         </div>
-                      ))}
+                      );})}
                     </div>
                   )}
                 </div>
@@ -446,7 +675,7 @@ const UserSamplePanel: React.FC = () => {
           </>
         )}
       </div>
-    </div>
+    </DetachablePanel>
   );
 };
 

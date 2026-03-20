@@ -1,8 +1,104 @@
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
+import { emit } from '@tauri-apps/api/event';
+import { open, save } from '@tauri-apps/plugin-dialog';
 import { LLMProvider, ModelId } from './llm';
 
 export type AppTheme = 'pibeat' | 'sonicpi' | 'amber';
+
+// ---- User Sample Cache Helpers ----
+const SAMPLE_CACHE_KEY = 'pibeat-user-samples-cache';
+
+function loadSampleCache(dir: string): Record<string, CachedSample> {
+  try {
+    const raw = localStorage.getItem(SAMPLE_CACHE_KEY);
+    if (!raw) return {};
+    const data = JSON.parse(raw);
+    // Cache is keyed by directory; only return if directory matches
+    if (data._dir !== dir) return {};
+    const cache: Record<string, CachedSample> = {};
+    for (const [path, entry] of Object.entries(data)) {
+      if (path === '_dir') continue;
+      cache[path] = entry as CachedSample;
+    }
+    return cache;
+  } catch {
+    return {};
+  }
+}
+
+function saveSampleCache(dir: string, samples: UserSampleInfo[], discovered: DiscoveredSample[]) {
+  try {
+    // Build a lookup of file metadata by path
+    const metaByPath: Record<string, { file_size: number; modified_ms: number }> = {};
+    for (const d of discovered) {
+      metaByPath[d.path] = { file_size: d.file_size, modified_ms: d.modified_ms };
+    }
+    const data: Record<string, unknown> = { _dir: dir };
+    for (const s of samples) {
+      const meta = metaByPath[s.path];
+      if (meta && s.duration_secs > 0) {
+        // Only cache fully analyzed samples
+        data[s.path] = {
+          file_size: meta.file_size,
+          modified_ms: meta.modified_ms,
+          info: s,
+        };
+      }
+    }
+    localStorage.setItem(SAMPLE_CACHE_KEY, JSON.stringify(data));
+  } catch (e) {
+    console.warn('[SampleCache] Failed to save cache:', e);
+  }
+}
+
+function clearSampleCache() {
+  localStorage.removeItem(SAMPLE_CACHE_KEY);
+}
+
+/** Load all cached UserSampleInfo entries for a given directory (for instant startup). */
+function loadCachedSampleInfos(dir: string): UserSampleInfo[] {
+  try {
+    const raw = localStorage.getItem(SAMPLE_CACHE_KEY);
+    if (!raw) return [];
+    const data = JSON.parse(raw);
+    if (data._dir !== dir) return [];
+    const infos: UserSampleInfo[] = [];
+    for (const [key, entry] of Object.entries(data)) {
+      if (key === '_dir') continue;
+      const cached = entry as CachedSample;
+      if (cached.info) infos.push(cached.info);
+    }
+    return infos;
+  } catch {
+    return [];
+  }
+}
+// ---- End Cache Helpers ----
+
+// ---- Buffer Cache Helpers ----
+const BUFFER_CACHE_KEY = 'pibeat-buffers-cache';
+
+function loadBufferCache(): Buffer[] | null {
+  try {
+    const raw = localStorage.getItem(BUFFER_CACHE_KEY);
+    if (!raw) return null;
+    const data = JSON.parse(raw) as Buffer[];
+    if (!Array.isArray(data) || data.length === 0) return null;
+    return data;
+  } catch {
+    return null;
+  }
+}
+
+function saveBufferCache(buffers: Buffer[]) {
+  try {
+    localStorage.setItem(BUFFER_CACHE_KEY, JSON.stringify(buffers));
+  } catch (e) {
+    console.warn('[BufferCache] Failed to save cache:', e);
+  }
+}
+// ---- End Buffer Cache Helpers ----
 
 export interface LogEntry {
   timestamp: number;
@@ -27,6 +123,28 @@ export interface UserSampleInfo {
   feeling: string;
   tags: string[];
   folder: string;
+}
+
+export interface DiscoveredSample {
+  name: string;
+  path: string;
+  file_type: string;
+  folder: string;
+  file_size: number;
+  modified_ms: number;
+}
+
+// Cached sample entry stored in localStorage for incremental scanning
+interface CachedSample {
+  file_size: number;
+  modified_ms: number;
+  info: UserSampleInfo;
+}
+
+export interface ScanProgress {
+  scanned: number;
+  total: number;
+  phase: 'discovering' | 'analyzing' | 'done';
 }
 
 export interface EngineStatus {
@@ -86,6 +204,8 @@ interface AppStore {
   
   // Engine status
   isPlaying: boolean;
+  isPaused: boolean;
+  playingBufferId: number | null;
   isRecording: boolean;
   masterVolume: number;
   bpm: number;
@@ -107,6 +227,7 @@ interface AppStore {
   userSamples: UserSampleInfo[];
   userSamplesDir: string | null;
   userSamplesLoading: boolean;
+  userSamplesScanProgress: ScanProgress | null;
   showUserSamplePanel: boolean;
   
   // Effects
@@ -121,6 +242,10 @@ interface AppStore {
   showHelp: boolean;
   showAgentChat: boolean;
   showCuePanel: boolean;
+  showBandVisualizer: boolean;
+
+  // Detached panels
+  detachedPanels: Record<string, boolean>;
   
   // Agent
   agentMessages: AgentMessage[];
@@ -130,14 +255,29 @@ interface AppStore {
   // Cues
   cueEvents: CueEvent[];
   
+  // Sample duration cache for timeline visualization
+  sampleDurations: Record<string, number>;
+  sampleDurationsLoading: boolean;
+  
+  // Active lines for code highlighting during playback
+  activeLines: number[];
+  
+  // Error line highlight (set when user clicks an error/warning in log)
+  errorLine: number | null;
+  
   // Actions
   setActiveBuffer: (id: number) => void;
   updateBufferCode: (id: number, code: string) => void;
+  renameBuffer: (id: number, name: string) => void;
   addBuffer: () => void;
   removeBuffer: (id: number) => void;
+  saveBufferToFile: (id?: number) => Promise<void>;
+  loadBufferFromFile: (id?: number) => Promise<void>;
   
   runCode: () => Promise<void>;
   stopAudio: () => Promise<void>;
+  pauseAudio: () => Promise<void>;
+  resumeAudio: () => Promise<void>;
   
   setVolume: (vol: number) => Promise<void>;
   setBpm: (bpm: number) => Promise<void>;
@@ -146,6 +286,7 @@ interface AppStore {
   stopRecording: (path?: string) => Promise<void>;
   
   updateWaveform: () => Promise<void>;
+  updateActiveLines: () => Promise<void>;
   fetchStatus: () => Promise<void>;
   fetchSamples: () => Promise<void>;
   fetchLogs: () => Promise<void>;
@@ -165,12 +306,15 @@ interface AppStore {
   toggleAgentChat: () => void;
   toggleCuePanel: () => void;
   toggleUserSamplePanel: () => void;
+  toggleBandVisualizer: () => void;
+  toggleDetachPanel: (panelId: string) => void;
 
   previewSynth: (synthName: string) => Promise<void>;
 
   // User Samples actions
   setUserSamplesDir: (dir: string) => Promise<void>;
   scanUserSamples: () => Promise<void>;
+  fullRescanUserSamples: () => Promise<void>;
   loadUserSamplesDir: () => Promise<void>;
 
   addAgentMessage: (msg: AgentMessage) => void;
@@ -179,6 +323,10 @@ interface AppStore {
   setAgentModel: (model: ModelId) => void;
 
   addLog: (level: string, message: string) => void;
+  setErrorLine: (line: number | null) => void;
+
+  // Sample duration actions
+  fetchSampleDurations: (names: string[]) => Promise<void>;
   
   // SuperCollider actions
   initSuperCollider: () => Promise<void>;
@@ -190,7 +338,7 @@ interface AppStore {
   clearCues: () => void;
 }
 
-const DEFAULT_CODE = `# Welcome to PiBeat! 🎵
+const DEFAULT_CODE = `# Welcome to PiBeat!
 # Write code to make music, just like Sonic Pi
 
 # Play a simple melody
@@ -229,20 +377,16 @@ play :g4, amp: 0.3, sustain: 2, attack: 0.5, release: 1
 `;
 
 export const useStore = create<AppStore>((set, get) => ({
-  buffers: [
+  buffers: loadBufferCache() || [
     { id: 0, name: 'Buffer 0', code: DEFAULT_CODE },
     { id: 1, name: 'Buffer 1', code: DEMO_BEAT },
     { id: 2, name: 'Buffer 2', code: DEMO_SYNTH },
     { id: 3, name: 'Buffer 3', code: '# Empty buffer\n' },
-    { id: 4, name: 'Buffer 4', code: '# Empty buffer\n' },
-    { id: 5, name: 'Buffer 5', code: '# Empty buffer\n' },
-    { id: 6, name: 'Buffer 6', code: '# Empty buffer\n' },
-    { id: 7, name: 'Buffer 7', code: '# Empty buffer\n' },
-    { id: 8, name: 'Buffer 8', code: '# Empty buffer\n' },
-    { id: 9, name: 'Buffer 9', code: '# Empty buffer\n' },
   ],
   activeBufferId: 0,
   isPlaying: false,
+  isPaused: false,
+  playingBufferId: null,
   isRecording: false,
   masterVolume: 1.0,
   bpm: 120,
@@ -267,36 +411,122 @@ export const useStore = create<AppStore>((set, get) => ({
   showHelp: false,
   showAgentChat: false,
   showCuePanel: false,
+  showBandVisualizer: false,
   showUserSamplePanel: false,
-  userSamples: [],
+  detachedPanels: JSON.parse(localStorage.getItem('pibeat-detached-panels') || '{}'),
+  userSamples: (() => {
+    const dir = localStorage.getItem('pibeat-user-samples-dir');
+    return dir ? loadCachedSampleInfos(dir) : [];
+  })(),
   userSamplesDir: localStorage.getItem('pibeat-user-samples-dir'),
   userSamplesLoading: false,
+  userSamplesScanProgress: null,
   agentMessages: [],
   agentProvider: 'local',
   agentModel: 'local-rules',
   cueEvents: [],
+  sampleDurations: {},
+  sampleDurationsLoading: false,
+  activeLines: [],
+  errorLine: null,
 
   setActiveBuffer: (id) => set({ activeBufferId: id }),
 
-  updateBufferCode: (id, code) => set((state) => ({
-    buffers: state.buffers.map(b => b.id === id ? { ...b, code } : b),
-  })),
+  updateBufferCode: (id, code) => {
+    set((state) => {
+      const newBuffers = state.buffers.map(b => b.id === id ? { ...b, code } : b);
+      saveBufferCache(newBuffers);
+      return { buffers: newBuffers };
+    });
+  },
+
+  renameBuffer: (id, name) => {
+    set((state) => {
+      const newBuffers = state.buffers.map(b => b.id === id ? { ...b, name } : b);
+      saveBufferCache(newBuffers);
+      return { buffers: newBuffers };
+    });
+  },
 
   addBuffer: () => set((state) => {
-    const maxId = Math.max(...state.buffers.map(b => b.id));
-    return {
-      buffers: [...state.buffers, {
-        id: maxId + 1,
-        name: `Buffer ${maxId + 1}`,
-        code: '# New buffer\n',
-      }],
-    };
+    const maxId = state.buffers.length > 0 ? Math.max(...state.buffers.map(b => b.id)) : -1;
+    const newBuffers = [...state.buffers, {
+      id: maxId + 1,
+      name: `Buffer ${maxId + 1}`,
+      code: '# New buffer\n',
+    }];
+    saveBufferCache(newBuffers);
+    return { buffers: newBuffers, activeBufferId: maxId + 1 };
   }),
 
-  removeBuffer: (id) => set((state) => ({
-    buffers: state.buffers.filter(b => b.id !== id),
-    activeBufferId: state.activeBufferId === id ? state.buffers[0]?.id ?? 0 : state.activeBufferId,
-  })),
+  removeBuffer: (id) => set((state) => {
+    if (state.buffers.length <= 1) return state; // Keep at least one buffer
+    const newBuffers = state.buffers.filter(b => b.id !== id);
+    const newActive = state.activeBufferId === id ? newBuffers[0]?.id ?? 0 : state.activeBufferId;
+    saveBufferCache(newBuffers);
+    return { buffers: newBuffers, activeBufferId: newActive };
+  }),
+
+  saveBufferToFile: async (id?) => {
+    const state = get();
+    const bufferId = id ?? state.activeBufferId;
+    const buffer = state.buffers.find(b => b.id === bufferId);
+    if (!buffer) return;
+
+    try {
+      const filePath = await save({
+        title: 'Save Sonic Pi Code',
+        defaultPath: `${buffer.name.replace(/[^a-zA-Z0-9_-]/g, '_')}.sonicpi`,
+        filters: [
+          { name: 'Sonic Pi Files', extensions: ['sonicpi'] },
+          { name: 'Ruby Files', extensions: ['rb'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      if (!filePath) return; // User cancelled
+
+      await invoke('save_code_to_file', { path: filePath, content: buffer.code });
+      get().addLog('info', `Saved buffer "${buffer.name}" to ${filePath}`);
+    } catch (e: any) {
+      get().addLog('error', `Save failed: ${e}`);
+    }
+  },
+
+  loadBufferFromFile: async (id?) => {
+    const state = get();
+    const bufferId = id ?? state.activeBufferId;
+
+    try {
+      const filePath = await open({
+        title: 'Open Sonic Pi Code',
+        multiple: false,
+        filters: [
+          { name: 'Sonic Pi Files', extensions: ['sonicpi'] },
+          { name: 'Ruby Files', extensions: ['rb'] },
+          { name: 'All Files', extensions: ['*'] },
+        ],
+      });
+      if (!filePath) return; // User cancelled
+
+      const path = typeof filePath === 'string' ? filePath : filePath;
+      const code = await invoke<string>('read_code_from_file', { path });
+
+      // Extract filename for buffer name
+      const fileName = path.split(/[\\/]/).pop() || 'Loaded';
+      const baseName = fileName.replace(/\.(sonicpi|rb)$/i, '');
+
+      set((s) => {
+        const newBuffers = s.buffers.map(b =>
+          b.id === bufferId ? { ...b, code, name: baseName } : b
+        );
+        saveBufferCache(newBuffers);
+        return { buffers: newBuffers };
+      });
+      get().addLog('info', `Loaded "${fileName}" into buffer`);
+    } catch (e: any) {
+      get().addLog('error', `Load failed: ${e}`);
+    }
+  },
 
   runCode: async () => {
     const state = get();
@@ -315,7 +545,7 @@ export const useStore = create<AppStore>((set, get) => ({
 
     try {
       const result = await invoke<RunResult>('run_code', { code: buffer.code });
-      set({ isPlaying: true, bpm: result.effective_bpm || get().bpm, setupTimeMs: result.setup_time_ms || 0 });
+      set({ isPlaying: true, isPaused: false, playingBufferId: buffer.id, bpm: result.effective_bpm || get().bpm, setupTimeMs: result.setup_time_ms || 0 });
       if (result.logs.length > 0) {
         set((s) => ({
           logs: [...s.logs, ...result.logs].slice(-500),
@@ -330,17 +560,37 @@ export const useStore = create<AppStore>((set, get) => ({
       const errorMsg = typeof e === 'string' ? e : e?.message || JSON.stringify(e);
       get().addLog('error', `Code error: ${errorMsg}`);
       console.error('[runCode] Backend error:', e);
-      set({ isPlaying: false });
+      set({ isPlaying: false, playingBufferId: null });
     }
   },
 
   stopAudio: async () => {
     try {
       await invoke('stop_audio');
-      set({ isPlaying: false });
+      set({ isPlaying: false, isPaused: false, playingBufferId: null, activeLines: [] });
       get().addLog('info', 'Stopped');
     } catch (e: any) {
       get().addLog('error', `Error stopping: ${e}`);
+    }
+  },
+
+  pauseAudio: async () => {
+    try {
+      await invoke('pause_audio');
+      set({ isPaused: true });
+      get().addLog('info', 'Paused');
+    } catch (e: any) {
+      get().addLog('error', `Pause error: ${e}`);
+    }
+  },
+
+  resumeAudio: async () => {
+    try {
+      await invoke('resume_audio');
+      set({ isPaused: false });
+      get().addLog('info', 'Resumed');
+    } catch (e: any) {
+      get().addLog('error', `Resume error: ${e}`);
     }
   },
 
@@ -366,7 +616,7 @@ export const useStore = create<AppStore>((set, get) => ({
     try {
       await invoke('start_recording');
       set({ isRecording: true });
-      get().addLog('info', '🔴 Recording started');
+      get().addLog('info', 'Recording started');
     } catch (e: any) {
       get().addLog('error', `Recording error: ${e}`);
     }
@@ -383,23 +633,48 @@ export const useStore = create<AppStore>((set, get) => ({
   },
 
   updateWaveform: async () => {
+    // Waveform is now fetched directly by WaveformVisualizer via refs.
+    // This store action is kept for backward compatibility but is a no-op.
+  },
+
+  updateActiveLines: async () => {
     try {
-      const waveform = await invoke<number[]>('get_waveform');
-      set({ waveform });
+      const activeLines = await invoke<number[]>('get_active_lines');
+      // Only update state if the lines actually changed (avoid unnecessary re-renders)
+      const prev = get().activeLines;
+      if (
+        prev.length !== activeLines.length ||
+        prev.some((v, i) => v !== activeLines[i])
+      ) {
+        set({ activeLines });
+      }
     } catch (e) {
-      // Ignore waveform errors
+      if (get().activeLines.length > 0) {
+        set({ activeLines: [] });
+      }
     }
   },
 
   fetchStatus: async () => {
     try {
       const status = await invoke<EngineStatus>('get_status');
-      set({
-        isPlaying: status.is_playing,
-        masterVolume: status.master_volume,
-        bpm: status.bpm,
-        isRecording: status.is_recording,
-      });
+      // Only update state if values actually changed
+      const s = get();
+      if (
+        s.isPlaying !== status.is_playing ||
+        s.masterVolume !== status.master_volume ||
+        s.bpm !== status.bpm ||
+        s.isRecording !== status.is_recording
+      ) {
+        set({
+          isPlaying: status.is_playing,
+          isPaused: status.is_playing ? s.isPaused : false,
+          playingBufferId: status.is_playing ? s.playingBufferId : null,
+          masterVolume: status.master_volume,
+          bpm: status.bpm,
+          isRecording: status.is_recording,
+        });
+      }
     } catch (e) {
       // Ignore
     }
@@ -456,6 +731,7 @@ export const useStore = create<AppStore>((set, get) => ({
   setTheme: (theme) => {
     localStorage.setItem('pibeat-theme', theme);
     set({ theme });
+    emit('theme-changed', { theme });
   },
   toggleSampleBrowser: () => set((s) => ({ showSampleBrowser: !s.showSampleBrowser })),
   toggleSynthBrowser: () => set((s) => ({ showSynthBrowser: !s.showSynthBrowser })),
@@ -464,6 +740,17 @@ export const useStore = create<AppStore>((set, get) => ({
   toggleAgentChat: () => set((s) => ({ showAgentChat: !s.showAgentChat })),
   toggleCuePanel: () => set((s) => ({ showCuePanel: !s.showCuePanel })),
   toggleUserSamplePanel: () => set((s) => ({ showUserSamplePanel: !s.showUserSamplePanel })),
+  toggleBandVisualizer: () => set((s) => ({ showBandVisualizer: !s.showBandVisualizer })),
+  toggleDetachPanel: (panelId) => set((s) => {
+    const newDetached = { ...s.detachedPanels };
+    if (newDetached[panelId]) {
+      delete newDetached[panelId];
+    } else {
+      newDetached[panelId] = true;
+    }
+    localStorage.setItem('pibeat-detached-panels', JSON.stringify(newDetached));
+    return { detachedPanels: newDetached };
+  }),
 
   previewSynth: async (synthName) => {
     try {
@@ -492,17 +779,119 @@ export const useStore = create<AppStore>((set, get) => ({
       get().addLog('error', 'No user samples directory set');
       return;
     }
-    set({ userSamplesLoading: true });
     try {
       // Ensure backend knows the directory
       await invoke('set_user_samples_dir', { dir });
-      const samples = await invoke<UserSampleInfo[]>('scan_user_samples');
-      set({ userSamples: samples, userSamplesLoading: false });
-      get().addLog('info', `Scanned ${samples.length} user samples`);
+
+      // Phase 1: Fast discovery — get file listing with metadata (no loading UI yet)
+      const discovered = await invoke<DiscoveredSample[]>('discover_user_samples');
+      const total = discovered.length;
+
+      // Phase 2: Load cache and determine what needs analysis
+      const cache = loadSampleCache(dir);
+      const cachedPaths = new Set(Object.keys(cache));
+      const discoveredPaths = new Set(discovered.map((d) => d.path));
+
+      const toAnalyze: DiscoveredSample[] = [];
+      const cachedResults: UserSampleInfo[] = [];
+
+      for (const d of discovered) {
+        const cached = cache[d.path];
+        if (cached && cached.file_size === d.file_size && cached.modified_ms === d.modified_ms) {
+          // File unchanged — use cached analysis
+          cachedResults.push(cached.info);
+        } else {
+          // New or modified file — needs analysis
+          toAnalyze.push(d);
+        }
+      }
+
+      // Removed files are simply not in discoveredPaths — they won't appear in results
+
+      const removedCount = [...cachedPaths].filter((p) => !discoveredPaths.has(p)).length;
+      const unchangedCount = cachedResults.length;
+      const newOrChangedCount = toAnalyze.length;
+
+      if (newOrChangedCount === 0 && removedCount === 0) {
+        // Nothing changed — silently update from cache without showing loading UI
+        set({ userSamples: cachedResults });
+        get().addLog('info', `${total} samples up to date (no changes detected)`);
+        return;
+      }
+
+      // Only now show loading UI — there are actual files to analyze
+      set({ userSamplesLoading: true, userSamplesScanProgress: { scanned: unchangedCount, total, phase: 'analyzing' } });
+
+      // Build initial state: cached results + placeholders for items to analyze
+      const placeholders: UserSampleInfo[] = toAnalyze.map((d) => ({
+        name: d.name,
+        path: d.path,
+        file_type: d.file_type,
+        folder: d.folder,
+        duration_secs: 0,
+        sample_rate: 0,
+        bpm_estimate: null,
+        audio_type: 'unknown',
+        feeling: 'neutral',
+        tags: [],
+      }));
+      const allSamples = [...cachedResults, ...placeholders];
+      set({
+        userSamples: allSamples,
+        userSamplesScanProgress: { scanned: unchangedCount, total, phase: 'analyzing' },
+      });
+      get().addLog(
+        'info',
+        `Found ${total} files: ${unchangedCount} cached, ${newOrChangedCount} to analyze` +
+          (removedCount > 0 ? `, ${removedCount} removed` : '')
+      );
+
+      // Phase 3: Analyze only new/changed files in batches
+      const BATCH_SIZE = 5;
+      let scanned = unchangedCount;
+      for (let i = 0; i < toAnalyze.length; i += BATCH_SIZE) {
+        const batch = toAnalyze.slice(i, i + BATCH_SIZE);
+        const results = await Promise.allSettled(
+          batch.map((d) => invoke<UserSampleInfo>('analyze_user_sample', { path: d.path }))
+        );
+
+        // Merge analyzed results into the samples array
+        const currentSamples = [...get().userSamples];
+        for (let j = 0; j < results.length; j++) {
+          const result = results[j];
+          if (result.status === 'fulfilled') {
+            const analyzed = result.value;
+            const idx = currentSamples.findIndex((s) => s.path === analyzed.path);
+            if (idx !== -1) {
+              currentSamples[idx] = analyzed;
+            }
+          }
+        }
+        scanned += batch.length;
+        set({
+          userSamples: currentSamples,
+          userSamplesScanProgress: { scanned: Math.min(scanned, total), total, phase: 'analyzing' },
+        });
+      }
+
+      // Save updated cache
+      saveSampleCache(dir, get().userSamples, discovered);
+
+      set({ userSamplesLoading: false, userSamplesScanProgress: { scanned: total, total, phase: 'done' } });
+      // Clear progress after a short delay
+      setTimeout(() => set({ userSamplesScanProgress: null }), 2000);
+      get().addLog('info', `Scan complete: ${newOrChangedCount} analyzed, ${unchangedCount} from cache`);
     } catch (e: any) {
-      set({ userSamplesLoading: false });
+      set({ userSamplesLoading: false, userSamplesScanProgress: null });
       get().addLog('error', `Failed to scan user samples: ${e}`);
     }
+  },
+
+  fullRescanUserSamples: async () => {
+    clearSampleCache();
+    set({ userSamples: [] });
+    get().addLog('info', 'Cache cleared — starting full rescan...');
+    await get().scanUserSamples();
   },
 
   loadUserSamplesDir: async () => {
@@ -533,6 +922,28 @@ export const useStore = create<AppStore>((set, get) => ({
       message,
     }].slice(-500),
   })),
+
+  setErrorLine: (line) => set({ errorLine: line }),
+
+  fetchSampleDurations: async (names: string[]) => {
+    if (names.length === 0) return;
+    // Filter out names we already have cached
+    const cached = get().sampleDurations;
+    const needed = names.filter(n => cached[n] === undefined);
+    if (needed.length === 0) return;
+
+    set({ sampleDurationsLoading: true });
+    try {
+      const durations = await invoke<Record<string, number>>('get_sample_durations', { names: needed });
+      set((state) => ({
+        sampleDurations: { ...state.sampleDurations, ...durations },
+        sampleDurationsLoading: false,
+      }));
+    } catch (e) {
+      console.warn('[store] Failed to fetch sample durations:', e);
+      set({ sampleDurationsLoading: false });
+    }
+  },
   
   addCue: (name, buffer) => {
     const state = get();
@@ -545,7 +956,7 @@ export const useStore = create<AppStore>((set, get) => ({
     set((s) => ({
       cueEvents: [...s.cueEvents, newCue].slice(-100), // Keep last 100 cues
     }));
-    get().addLog('comment', `🎯 Cue: ${name}`);
+    get().addLog('comment', `Cue: ${name}`);
   },
   
   clearCues: () => set({ cueEvents: [] }),

@@ -1,6 +1,6 @@
 import React from 'react';
 import { useStore } from '../store';
-import { FaTimes } from 'react-icons/fa';
+import DetachablePanel from './DetachablePanel';
 
 const EffectsPanel: React.FC = () => {
   const { effects, setEffects, showEffectsPanel, toggleEffectsPanel } = useStore();
@@ -8,14 +8,19 @@ const EffectsPanel: React.FC = () => {
   if (!showEffectsPanel) return null;
 
   return (
-    <div className="side-panel effects-panel">
-      <div className="panel-header">
-        <h3>Effects</h3>
-        <button className="close-btn" onClick={toggleEffectsPanel}>
-          <FaTimes />
-        </button>
-      </div>
+    <DetachablePanel panelId="effectsPanel" title="Effects" onClose={toggleEffectsPanel} className="effects-panel">
       <div className="panel-content">
+        <div className="effects-info">
+          <p>
+            <strong>Master Effects</strong> — These knobs apply a global post-processing
+            chain to the live audio output. They affect the sound in real time without
+            modifying your code.
+          </p>
+          <p>
+            Effects here <em>stack</em> with any <code>with_fx</code> blocks in your code.
+            Use the <strong>Dry</strong> preset to bypass all master effects.
+          </p>
+        </div>
         <div className="effect-group">
           <label>Reverb Mix</label>
           <input
@@ -130,7 +135,7 @@ const EffectsPanel: React.FC = () => {
           </div>
         </div>
       </div>
-    </div>
+    </DetachablePanel>
   );
 };
 

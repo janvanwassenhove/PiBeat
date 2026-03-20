@@ -1,7 +1,8 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStore, AgentMessage } from '../store';
-import { FaTimes, FaPaperPlane, FaCode, FaMagic, FaTrash, FaPlus, FaCog } from 'react-icons/fa';
+import { FaTimes, FaPaperPlane, FaCode, FaMagic, FaTrash, FaPlus, FaCog, FaMusic, FaInfoCircle, FaLightbulb } from 'react-icons/fa';
 import { reactiveAgentProcess, setStoredApiKey, getApiKey, AVAILABLE_MODELS, LLMProvider, ModelId } from '../llm';
+import DetachablePanel from './DetachablePanel';
 
 const AgentChat: React.FC = () => {
   const {
@@ -26,6 +27,7 @@ const AgentChat: React.FC = () => {
   const [apiKeys, setApiKeys] = useState({
     openai: '',
     anthropic: '',
+    gemini: '',
   });
   const messagesEndRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -35,9 +37,11 @@ const AgentChat: React.FC = () => {
     const loadApiKeys = async () => {
       const openaiKey = await getApiKey('openai');
       const anthropicKey = await getApiKey('anthropic');
+      const geminiKey = await getApiKey('gemini');
       setApiKeys({
         openai: openaiKey || '',
         anthropic: anthropicKey || '',
+        gemini: geminiKey || '',
       });
     };
     loadApiKeys();
@@ -73,6 +77,8 @@ const AgentChat: React.FC = () => {
         apiKey = apiKeys.openai || undefined;
       } else if (agentProvider === 'anthropic') {
         apiKey = apiKeys.anthropic || undefined;
+      } else if (agentProvider === 'gemini') {
+        apiKey = apiKeys.gemini || undefined;
       }
 
       console.log('[AgentChat] Sending message:', {
@@ -118,19 +124,19 @@ const AgentChat: React.FC = () => {
       let errorMessage = 'Sorry, I encountered an error.';
       
       if (error?.message?.includes('API key')) {
-        errorMessage = '❌ Invalid API key. Please check your API key in Settings (⚙️) or verify it at platform.openai.com or console.anthropic.com.';
+        errorMessage = 'Invalid API key. Please check your API key in Settings or verify it at platform.openai.com or console.anthropic.com.';
       } else if (error?.message?.includes('rate_limit') || error?.message?.includes('quota')) {
-        errorMessage = '⚠️ API rate limit or quota exceeded. Please try again later or switch to Local mode.';
+        errorMessage = 'API rate limit or quota exceeded. Please try again later or switch to Local mode.';
       } else if (error?.message?.includes('model') || error?.message?.includes('not found')) {
-        errorMessage = `❌ Model "${agentModel}" not found or not available. Try switching to a different model.`;
+        errorMessage = `Model "${agentModel}" not found or not available. Try switching to a different model.`;
       } else if (error?.status === 400) {
-        errorMessage = `❌ API Error: ${error.message || 'Bad request'}. The model may not support the requested parameters.`;
+        errorMessage = `API Error: ${error.message || 'Bad request'}. The model may not support the requested parameters.`;
       } else if (error?.status === 401 || error?.status === 403) {
-        errorMessage = '🔒 Authentication failed. Please check your API key in Settings (⚙️).';
+        errorMessage = 'Authentication failed. Please check your API key in Settings.';
       } else if (agentProvider !== 'local') {
-        const hasKey = (agentProvider === 'openai' && apiKeys.openai) || (agentProvider === 'anthropic' && apiKeys.anthropic);
+        const hasKey = (agentProvider === 'openai' && apiKeys.openai) || (agentProvider === 'anthropic' && apiKeys.anthropic) || (agentProvider === 'gemini' && apiKeys.gemini);
         if (!hasKey) {
-          errorMessage = '⚠️ No API key configured. Please add your API key in Settings (⚙️) or switch to Local mode.';
+          errorMessage = 'No API key configured. Please add your API key in Settings or switch to Local mode.';
         }
       }
       
@@ -157,7 +163,7 @@ const AgentChat: React.FC = () => {
     updateBufferCode(activeBufferId, newCode);
     addAgentMessage({
       role: 'assistant',
-      content: '✅ Code inserted into the current buffer.',
+      content: 'Code inserted into the current buffer.',
     });
   };
 
@@ -165,7 +171,7 @@ const AgentChat: React.FC = () => {
     updateBufferCode(activeBufferId, code);
     addAgentMessage({
       role: 'assistant',
-      content: '✅ Buffer code replaced with the refactored version.',
+      content: 'Buffer code replaced with the refactored version.',
     });
   };
 
@@ -174,6 +180,51 @@ const AgentChat: React.FC = () => {
       label: 'Generate a beat',
       icon: <FaCode />,
       prompt: 'Generate a cool drum beat pattern using live_loop with kick, snare, and hihat samples.',
+    },
+    {
+      label: 'Create intro',
+      icon: <FaCode />,
+      prompt: 'Create an intro section that eases into the track with ambient pads and sparse percussion.',
+    },
+    {
+      label: 'Create drop',
+      icon: <FaMagic />,
+      prompt: 'Create an energetic drop section with heavy drums and bass for maximum impact.',
+    },
+    {
+      label: 'Create buildup',
+      icon: <FaMagic />,
+      prompt: 'Create a buildup section with rising tension, snare rolls, and risers before a drop.',
+    },
+    {
+      label: 'Create verse',
+      icon: <FaCode />,
+      prompt: 'Create a verse section with drums, bass, and pad. Keep it moderate intensity.',
+    },
+    {
+      label: 'Create chorus',
+      icon: <FaMagic />,
+      prompt: 'Create a memorable chorus section with full chords, driving bass, and energetic drums.',
+    },
+    {
+      label: 'Create bridge',
+      icon: <FaCode />,
+      prompt: 'Create a contrasting bridge section with different chords for a moment of reflection.',
+    },
+    {
+      label: 'Create outro',
+      icon: <FaMagic />,
+      prompt: 'Create an outro with a gradual fade out that dissolves into reverb.',
+    },
+    {
+      label: 'Add fade in',
+      icon: <FaMagic />,
+      prompt: 'Create a fade-in pattern where amplitude and filter cutoff gradually increase.',
+    },
+    {
+      label: 'Add fade out',
+      icon: <FaMagic />,
+      prompt: 'Create a fade-out pattern where amplitude decreases and reverb increases.',
     },
     {
       label: 'Refactor my code',
@@ -190,15 +241,44 @@ const AgentChat: React.FC = () => {
       icon: <FaCode />,
       prompt: 'Explain what the current code in my buffer does, line by line.',
     },
+    {
+      label: 'Full song structure',
+      icon: <FaMagic />,
+      prompt: 'Generate a full song structure with verse, buildup, and drop sections.',
+    },
+    {
+      label: 'Parity check',
+      icon: <FaInfoCircle />,
+      prompt: 'Run a full Sonic Pi parity check on my current code. Analyze synths, effects, samples, and language constructs for compatibility.',
+    },
+    {
+      label: 'Fix parity issues',
+      icon: <FaLightbulb />,
+      prompt: 'Fix parity issues in my code. Replace unsupported features with PiBeat-compatible alternatives.',
+    },
+    {
+      label: 'Check effects parity',
+      icon: <FaInfoCircle />,
+      prompt: 'Check the effects parity of my code. Which effects are fully supported, partially supported, or missing?',
+    },
+    {
+      label: 'Check synth parity',
+      icon: <FaInfoCircle />,
+      prompt: 'Check the synth parity of my code. Which synths are fully supported and which may sound different?',
+    },
   ];
 
   return (
-    <div className="side-panel agent-chat-panel">
-      <div className="panel-header">
-        <h3>
-          <span className="agent-icon">🤖</span> Agent
-        </h3>
-        <div className="agent-header-actions">
+    <DetachablePanel
+      panelId="agentChat"
+      title="Agent"
+      icon={<FaCode className="agent-icon" />}
+      onClose={toggleAgentChat}
+      className="agent-chat-panel"
+      defaultWidth={380}
+      defaultHeight={550}
+      headerActions={
+        <>
           <button 
             className="close-btn" 
             onClick={() => setShowSettings(true)} 
@@ -209,11 +289,9 @@ const AgentChat: React.FC = () => {
           <button className="close-btn" onClick={clearAgentMessages} title="Clear chat">
             <FaTrash />
           </button>
-          <button className="close-btn" onClick={toggleAgentChat}>
-            <FaTimes />
-          </button>
-        </div>
-      </div>
+        </>
+      }
+    >
 
       {/* Model Selector Bar */}
       <div className="agent-model-selector">
@@ -229,9 +307,18 @@ const AgentChat: React.FC = () => {
           className="agent-select"
         >
           <option value="local">Local (Offline)</option>
-          <option value="openai">OpenAI</option>
-          <option value="anthropic">Anthropic</option>
+          <option value="openai">{apiKeys.openai ? '● ' : '○ '}OpenAI</option>
+          <option value="anthropic">{apiKeys.anthropic ? '● ' : '○ '}Anthropic</option>
+          <option value="gemini">{apiKeys.gemini ? '● ' : '○ '}Google Gemini</option>
         </select>
+        {agentProvider !== 'local' && (
+          <span
+            className={`agent-key-status ${apiKeys[agentProvider] ? 'agent-key-found' : 'agent-key-missing'}`}
+            title={apiKeys[agentProvider] ? 'API key configured' : 'No API key — set one in Settings'}
+          >
+            {apiKeys[agentProvider] ? '✓' : '✗'}
+          </span>
+        )}
         <select
           value={agentModel}
           onChange={(e) => setAgentModel(e.target.value as ModelId)}
@@ -253,6 +340,7 @@ const AgentChat: React.FC = () => {
             setApiKeys(keys);
             if (keys.openai) setStoredApiKey('openai', keys.openai);
             if (keys.anthropic) setStoredApiKey('anthropic', keys.anthropic);
+            if (keys.gemini) setStoredApiKey('gemini', keys.gemini);
             setShowSettings(false);
           }}
           onClose={() => setShowSettings(false)}
@@ -262,7 +350,7 @@ const AgentChat: React.FC = () => {
       <div className="agent-messages">
         {agentMessages.length === 0 && (
           <div className="agent-welcome">
-            <div className="agent-welcome-icon">🎵</div>
+            <div className="agent-welcome-icon"><FaMusic /></div>
             <p className="agent-welcome-title">PiBeat Agent</p>
             <p className="agent-welcome-desc">
               I know Sonic Pi inside and out. Ask me to generate beats, 
@@ -319,7 +407,7 @@ const AgentChat: React.FC = () => {
 
       <div className="agent-input-area">
         <div className="agent-context-badge" title="The agent can see your current buffer code">
-          📋 Buffer {activeBufferId}
+          Buffer {activeBufferId}
         </div>
         <div className="agent-input-row">
           <textarea
@@ -342,7 +430,7 @@ const AgentChat: React.FC = () => {
           </button>
         </div>
       </div>
-    </div>
+    </DetachablePanel>
   );
 };
 
@@ -406,18 +494,19 @@ const MessageContent: React.FC<{
 
 /** Settings modal for API keys */
 const SettingsModal: React.FC<{
-  apiKeys: { openai: string; anthropic: string };
-  onSave: (keys: { openai: string; anthropic: string }) => void;
+  apiKeys: { openai: string; anthropic: string; gemini: string };
+  onSave: (keys: { openai: string; anthropic: string; gemini: string }) => void;
   onClose: () => void;
 }> = ({ apiKeys, onSave, onClose }) => {
   const [openaiKey, setOpenaiKey] = useState(apiKeys.openai);
   const [anthropicKey, setAnthropicKey] = useState(apiKeys.anthropic);
+  const [geminiKey, setGeminiKey] = useState(apiKeys.gemini);
 
   return (
     <div className="agent-settings-overlay" onClick={onClose}>
       <div className="agent-settings-modal" onClick={(e) => e.stopPropagation()}>
         <div className="agent-settings-header">
-          <h3>⚙️ LLM Settings</h3>
+          <h3><FaCog /> LLM Settings</h3>
           <button className="close-btn" onClick={onClose}>
             <FaTimes />
           </button>
@@ -456,11 +545,27 @@ const SettingsModal: React.FC<{
             </p>
           </div>
           <div className="settings-section">
+            <label>Google Gemini API Key</label>
+            <input
+              type="password"
+              value={geminiKey}
+              onChange={(e) => setGeminiKey(e.target.value)}
+              placeholder="AIza..."
+              className="agent-settings-input"
+            />
+            <p className="settings-hint">
+              Get your key from{' '}
+              <a href="https://aistudio.google.com/apikey" target="_blank" rel="noreferrer">
+                aistudio.google.com
+              </a>
+            </p>
+          </div>
+          <div className="settings-section">
             <p className="settings-note">
-              ℹ️ <strong>Priority:</strong> 1) System environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY), 2) .env file, 3) localStorage (below).
+              <FaInfoCircle /> <strong>Priority:</strong> 1) System environment variables (OPENAI_API_KEY, ANTHROPIC_API_KEY, GEMINI_API_KEY), 2) .env file, 3) localStorage (below).
             </p>
             <p className="settings-note">
-              💡 If you set system env vars, they will override these values. <strong>Local mode</strong> works offline with no API key required.
+              <FaLightbulb /> If you set system env vars, they will override these values. <strong>Local mode</strong> works offline with no API key required.
             </p>
           </div>
         </div>
@@ -470,7 +575,7 @@ const SettingsModal: React.FC<{
           </button>
           <button
             className="agent-settings-btn save"
-            onClick={() => onSave({ openai: openaiKey, anthropic: anthropicKey })}
+            onClick={() => onSave({ openai: openaiKey, anthropic: anthropicKey, gemini: geminiKey })}
           >
             Save Keys
           </button>

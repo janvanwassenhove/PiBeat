@@ -92,9 +92,9 @@ midi_note_on :c4
 # MIDI output is recognized but no MIDI output is generated
 ```
 
-### `at` Blocks
+### `at` Blocks ✅
 ```ruby
-# ⚠️ NOT SUPPORTED:
+# ✅ NOW SUPPORTED:
 at [1, 2, 3] do |t|
   play :c4
 end
@@ -107,11 +107,19 @@ my_func = lambda { play :c4 }
 my_func.call
 ```
 
-### `time_warp` / `with_swing`
+### `time_warp`
 ```ruby
-# ⚠️ PARSED BUT IGNORED:
+# ✅ SUPPORTED — schedules at offset, does NOT advance parent clock:
 time_warp 0.5 do
   play :c4
+end
+```
+
+### `with_swing`
+```ruby
+# ⚠️ NOT SUPPORTED:
+with_swing 0.1 do
+  # ...
 end
 ```
 

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 import { useStore } from '../store';
-import { FaPlay, FaTimes, FaChevronRight, FaChevronDown } from 'react-icons/fa';
+import { FaPlay, FaChevronRight, FaChevronDown, FaKeyboard } from 'react-icons/fa';
+import DetachablePanel from './DetachablePanel';
 
 interface SynthEntry {
   name: string;       // display name
@@ -70,7 +71,7 @@ const SYNTH_CATALOG: SynthEntry[] = [
   { name: 'Sub Pulse', sonicPiName: 'sub_pulse', category: 'Sub' },
 ];
 
-const FaKeyboard = () => <span style={{ fontSize: '14px' }}>🎹</span>;
+
 
 const SynthBrowser: React.FC = () => {
   const {
@@ -126,13 +127,7 @@ const SynthBrowser: React.FC = () => {
   };
 
   return (
-    <div className="side-panel sample-browser">
-      <div className="panel-header">
-        <h3><FaKeyboard /> Synths</h3>
-        <button className="close-btn" onClick={toggleSynthBrowser}>
-          <FaTimes />
-        </button>
-      </div>
+    <DetachablePanel panelId="synthBrowser" title="Synths" icon={<FaKeyboard />} onClose={toggleSynthBrowser} className="sample-browser">
       <div className="panel-content">
         <div className="synth-filter">
           <input
@@ -188,7 +183,7 @@ const SynthBrowser: React.FC = () => {
           </div>
         ))}
       </div>
-    </div>
+    </DetachablePanel>
   );
 };
 

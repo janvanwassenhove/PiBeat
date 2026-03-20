@@ -11,10 +11,9 @@
 ///    install needed.
 /// 2. **System mode**: Falls back to a system-installed SuperCollider
 ///    if the bundle is not found.
-
 use std::collections::HashMap;
 use std::net::UdpSocket;
-use std::path::{PathBuf};
+use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
 use std::time::{Duration, Instant};
@@ -80,10 +79,12 @@ pub struct ScEngine {
     pub loaded_buffers: Mutex<HashMap<String, i32>>,
     /// Currently active FX node IDs
     active_fx_nodes: Mutex<Vec<i32>>,
-    /// FX bus stack: (bus_id, fx_node_id, fx_group_node_id)
-    /// When a with_fx block is entered, a private bus + FX synth are pushed.
-    /// Synths/samples inside the block output to the top-of-stack bus.
-    fx_bus_stack: Mutex<Vec<(i32, i32, i32)>>,
+    /// FX bus map: fx_id → (bus_id, fx_node_id)
+    /// Each with_fx block gets a unique fx_id at generation time.
+    /// The SC engine maps this ID to the allocated bus and FX synth node.
+    /// This replaces the old stack-based approach which was corrupted by
+    /// interleaved events from concurrent live_loops.
+    fx_bus_map: Mutex<HashMap<u64, (i32, i32)>>,
     /// Whether scsynth has booted and is ready
     is_booted: AtomicBool,
     /// Path to scsynth executable
@@ -100,11 +101,15 @@ pub struct ScEngine {
     scope_buffer_id: i32,
     /// Shared engine state
     pub state: Mutex<ScEngineState>,
+    /// Accumulated SC error messages (drained by the frontend via drain_errors())
+    pub sc_errors: Mutex<Vec<String>>,
+    /// Whether SynthDefs have been successfully loaded (via boot or reload)
+    synthdefs_loaded: AtomicBool,
 }
 
 impl ScEngine {
     /// Create a new SC engine. Does NOT start scsynth yet — call `boot()` for that.
-    /// 
+    ///
     /// If `sc_bundle_dir` is Some, looks for bundled scsynth in that directory first.
     /// Falls back to searching for a system-installed SuperCollider.
     pub fn new(sc_bundle_dir: Option<PathBuf>) -> Result<Self, String> {
@@ -117,7 +122,9 @@ impl ScEngine {
                         (synth_path, None, Some(plugins), synthdefs, true)
                     }
                     None => {
-                        eprintln!("[SC] Bundle dir exists but scsynth not found, trying system install...");
+                        eprintln!(
+                        "[SC] Bundle dir exists but scsynth not found, trying system install..."
+                    );
                         let (synth, lang) = find_supercollider()?;
                         let sd_dir = get_synthdefs_dir();
                         (synth, lang, None, sd_dir, false)
@@ -161,11 +168,11 @@ impl ScEngine {
             scsynth_process: Mutex::new(None),
             sc_port: SC_PORT,
             next_node_id: AtomicI32::new(2000), // Start above our group IDs
-            next_buffer_id: AtomicI32::new(1),   // Buffer 0 reserved for scope
-            next_bus_id: AtomicI32::new(16),     // Private buses start at 16 (after hardware)
+            next_buffer_id: AtomicI32::new(1),  // Buffer 0 reserved for scope
+            next_bus_id: AtomicI32::new(16),    // Private buses start at 16 (after hardware)
             loaded_buffers: Mutex::new(HashMap::new()),
             active_fx_nodes: Mutex::new(Vec::new()),
-            fx_bus_stack: Mutex::new(Vec::new()),
+            fx_bus_map: Mutex::new(HashMap::new()),
             is_booted: AtomicBool::new(false),
             scsynth_path,
             sclang_path,
@@ -174,6 +181,8 @@ impl ScEngine {
             use_bundled,
             scope_buffer_id: 0,
             state: Mutex::new(ScEngineState::default()),
+            sc_errors: Mutex::new(Vec::new()),
+            synthdefs_loaded: AtomicBool::new(false),
         })
     }
 
@@ -183,7 +192,10 @@ impl ScEngine {
             return Ok(());
         }
 
-        eprintln!("[SC] Booting SuperCollider server (bundled={})...", self.use_bundled);
+        eprintln!(
+            "[SC] Booting SuperCollider server (bundled={})...",
+            self.use_bundled
+        );
 
         // Step 1: Start scsynth subprocess
         self.start_scsynth()?;
@@ -194,12 +206,17 @@ impl ScEngine {
         // Step 3: Ensure SynthDefs are available
         if !sc_synthdefs::synthdefs_exist(&self.synthdefs_dir) {
             if self.use_bundled {
-                // In bundled mode, SynthDefs should already be pre-compiled
-                // If they're missing, that's a build/setup error
-                return Err(
-                    "Pre-compiled SynthDefs not found in bundle. Run setup_sc.ps1 to set up the SC bundle."
-                        .to_string(),
-                );
+                // In bundled mode, try system sclang first, otherwise warn and continue
+                // with whatever SynthDefs are available
+                if self.sclang_path.is_some() {
+                    eprintln!("[SC] Bundled SynthDefs outdated, recompiling via sclang...");
+                    if let Err(e) = self.compile_synthdefs() {
+                        eprintln!("[SC] SynthDef recompilation failed: {}. Using existing defs.", e);
+                    }
+                } else {
+                    eprintln!("[SC] WARNING: SynthDefs may be outdated (version mismatch). Some FX may not work correctly.");
+                    eprintln!("[SC] Run compile_synthdefs.ps1 to update, or install SuperCollider for auto-compilation.");
+                }
             } else {
                 // System mode: compile SynthDefs using sclang
                 eprintln!("[SC] Compiling SynthDefs via sclang...");
@@ -209,11 +226,11 @@ impl ScEngine {
             eprintln!("[SC] SynthDefs already compiled, skipping compilation");
         }
 
-        // Step 4: Load SynthDefs into scsynth
-        self.load_synthdefs()?;
-
-        // Step 5: Set up node groups
+        // Step 4: Set up node groups (BEFORE SynthDef loading so verification can test /s_new)
         self.setup_groups()?;
+
+        // Step 5: Load SynthDefs into scsynth
+        self.load_synthdefs()?;
 
         // Step 6: Set up scope buffer for waveform visualization
         self.setup_scope()?;
@@ -264,15 +281,25 @@ impl ScEngine {
                 envelope,
                 pan,
                 params,
-            } => {
-                self.play_note(synth_type, frequency, amplitude, duration_secs, &envelope, pan, &params)
-            }
+                fx_context,
+            } => self.play_note(
+                synth_type,
+                frequency,
+                amplitude,
+                duration_secs,
+                &envelope,
+                pan,
+                &params,
+                fx_context,
+            ),
             AudioCommand::PlaySample {
                 samples: _,
                 sample_rate: _,
                 amplitude: _,
                 rate: _,
                 pan: _,
+                sustain_secs: _,
+                ..
             } => {
                 // For raw sample data, we can't easily send to SC.
                 // Samples should be loaded via load_sample_buffer() instead.
@@ -291,11 +318,13 @@ impl ScEngine {
             AudioCommand::Stop => self.stop_all(),
             AudioCommand::SetEffect {
                 reverb_mix,
+                reverb_room: _,
                 delay_time,
                 delay_feedback,
                 distortion,
                 lpf_cutoff,
                 hpf_cutoff,
+                ..  // Remaining fields handled by FxStart/FxEnd in SC path
             } => self.set_global_effects(
                 reverb_mix,
                 delay_time,
@@ -304,11 +333,11 @@ impl ScEngine {
                 lpf_cutoff,
                 hpf_cutoff,
             ),
-            AudioCommand::FxStart { fx_type, params } => {
-                self.push_fx_bus(&fx_type, &params)
-            }
-            AudioCommand::FxEnd => {
-                self.pop_fx_bus()
+            AudioCommand::FxStart { fx_type, params, fx_id, parent_fx_id } => self.push_fx_bus(fx_id, parent_fx_id, &fx_type, &params),
+            AudioCommand::FxEnd { fx_id } => self.pop_fx_bus(fx_id),
+            AudioCommand::SetRuntimeVar { .. } => {
+                // Handled by the scheduler thread, not by the SC engine directly
+                Ok(())
             }
         }
     }
@@ -323,16 +352,18 @@ impl ScEngine {
         envelope: &super::synth::Envelope,
         pan: f32,
         params: &[(String, f32)],
+        fx_context: u64,
     ) -> Result<(), String> {
         let node_id = self.alloc_node_id();
         let def_name = sc_synthdefs::synthdef_name(&synth_type);
         let master_vol = self.state.lock().master_volume;
 
-        // Determine output bus: if inside a with_fx block, route to the FX bus
-        let out_bus = self.current_out_bus();
+        // Determine output bus from the FX context ID
+        let out_bus = self.bus_for_fx_context(fx_context);
 
         // Compute sustain (hold time) from total duration minus envelope times
-        let sustain_time = (duration_secs - envelope.attack - envelope.decay - envelope.release).max(0.0);
+        let sustain_time =
+            (duration_secs - envelope.attack - envelope.decay - envelope.release).max(0.0);
 
         let mut args = vec![
             OscType::String(def_name.to_string()),
@@ -366,7 +397,51 @@ impl ScEngine {
             args.push(OscType::Float(*val));
         }
 
+        eprintln!("[SC] /s_new '{}' node={} group={} out={} freq={:.1} amp={:.3} atk={:.3} dec={:.3} sus={:.3} rel={:.3} sus_lvl={:.3}",
+            def_name, node_id, SOURCE_GROUP, out_bus, frequency, amplitude * master_vol,
+            envelope.attack, envelope.decay, sustain_time, envelope.release, envelope.sustain);
+
         self.send_osc_msg("/s_new", args)?;
+
+        // Brief non-blocking check for /fail response from scsynth.
+        // If the SynthDef doesn't exist, scsynth replies with /fail immediately.
+        {
+            let _ = self.socket.set_nonblocking(true);
+            let mut buf = [0u8; 65536];
+            // Try reading up to 5 messages within a short window
+            for _ in 0..5 {
+                match self.socket.recv_from(&mut buf) {
+                    Ok((size, _)) => {
+                        if let Ok((_, packet)) = decoder::decode_udp(&buf[..size]) {
+                            if let OscPacket::Message(msg) = &packet {
+                                if msg.addr == "/fail" {
+                                    let err_detail: String = msg
+                                        .args
+                                        .iter()
+                                        .map(|a| format!("{:?}", a))
+                                        .collect::<Vec<_>>()
+                                        .join(" ");
+                                    let err_msg = format!(
+                                        "SC /s_new FAILED for '{}' (node {}): {}",
+                                        def_name, node_id, err_detail
+                                    );
+                                    eprintln!("[SC] {}", err_msg);
+                                    self.sc_errors.lock().push(err_msg.clone());
+                                    // Don't return Err — the sound still partially works
+                                    // (scsynth substitutes the default SynthDef)
+                                }
+                            }
+                        }
+                    }
+                    Err(_) => break, // No more messages
+                }
+            }
+            let _ = self.socket.set_nonblocking(false);
+            let _ = self
+                .socket
+                .set_read_timeout(Some(Duration::from_millis(500)));
+        }
+
         self.state.lock().is_playing = true;
         Ok(())
     }
@@ -378,10 +453,11 @@ impl ScEngine {
         amplitude: f32,
         rate: f32,
         pan: f32,
+        fx_context: u64,
     ) -> Result<(), String> {
         let node_id = self.alloc_node_id();
         let master_vol = self.state.lock().master_volume;
-        let out_bus = self.current_out_bus();
+        let out_bus = self.bus_for_fx_context(fx_context);
 
         self.send_osc_msg(
             "/s_new",
@@ -419,10 +495,7 @@ impl ScEngine {
         }
 
         let buf_id = self.alloc_buffer_id();
-        eprintln!(
-            "[SC] Loading sample '{}' into buffer {}",
-            file_path, buf_id
-        );
+        eprintln!("[SC] Loading sample '{}' into buffer {}", file_path, buf_id);
 
         // Convert path separators for scsynth (it prefers forward slashes)
         let sc_path = file_path.replace('\\', "/");
@@ -451,23 +524,46 @@ impl ScEngine {
         Ok(buf_id)
     }
 
+    /// Quick health check: send /status and wait for a reply
+    pub fn check_status(&self) -> Result<(), String> {
+        self.send_osc_msg("/status", vec![])?;
+        // Brief non-blocking check for /status.reply
+        let _ = self.socket.set_nonblocking(false);
+        let _ = self
+            .socket
+            .set_read_timeout(Some(Duration::from_millis(200)));
+        let start = Instant::now();
+        while start.elapsed() < Duration::from_millis(200) {
+            match self.recv_osc() {
+                Ok(OscPacket::Message(msg)) if msg.addr == "/status.reply" => {
+                    eprintln!("[SC] Health check OK: scsynth responding");
+                    return Ok(());
+                }
+                Ok(_) => continue, // other message, keep waiting
+                Err(_) => break,
+            }
+        }
+        Err("scsynth did not respond to /status within 200ms".to_string())
+    }
+
+    /// Drain accumulated SC error messages (for surfacing to the Log Panel).
+    pub fn drain_errors(&self) -> Vec<String> {
+        let mut errs = self.sc_errors.lock();
+        let drained = errs.drain(..).collect();
+        drained
+    }
+
     /// Stop all audio and reset all state for a clean restart
     pub fn stop_all(&self) -> Result<(), String> {
         // Free all nodes in the source group
-        self.send_osc_msg(
-            "/g_freeAll",
-            vec![OscType::Int(SOURCE_GROUP)],
-        )?;
+        self.send_osc_msg("/g_freeAll", vec![OscType::Int(SOURCE_GROUP)])?;
 
         // Also free FX group nodes
-        self.send_osc_msg(
-            "/g_freeAll",
-            vec![OscType::Int(FX_GROUP)],
-        )?;
+        self.send_osc_msg("/g_freeAll", vec![OscType::Int(FX_GROUP)])?;
 
         self.active_fx_nodes.lock().clear();
-        // Reset the FX bus stack so the next run starts clean
-        self.fx_bus_stack.lock().clear();
+        // Reset the FX bus map so the next run starts clean
+        self.fx_bus_map.lock().clear();
         // Reset bus allocator back to 16 (first private bus)
         self.next_bus_id.store(16, Ordering::Relaxed);
         self.state.lock().is_playing = false;
@@ -628,11 +724,7 @@ impl ScEngine {
     /// Create an FX node for a with_fx block and return the node ID.
     /// The FX is placed at the tail of the source group so it processes
     /// all synths inside the same group.
-    pub fn create_fx_node(
-        &self,
-        fx_type: &str,
-        params: &[(String, f32)],
-    ) -> Result<i32, String> {
+    pub fn create_fx_node(&self, fx_type: &str, params: &[(String, f32)]) -> Result<i32, String> {
         let node_id = self.alloc_node_id();
         let def_name = match fx_type {
             "reverb" | "gverb" => "sonic_fx_reverb",
@@ -643,6 +735,14 @@ impl ScEngine {
             "hpf" | "rhpf" | "nrhpf" => "sonic_fx_hpf",
             "flanger" => "sonic_fx_flanger",
             "compressor" => "sonic_fx_compressor",
+            "bitcrusher" | "krush" => "sonic_fx_bitcrusher",
+            "pan" => "sonic_fx_pan",
+            "wobble" | "ixi_techno" => "sonic_fx_wobble",
+            "tremolo" => "sonic_fx_tremolo",
+            "normaliser" | "normalizer" => "sonic_fx_normaliser",
+            "chorus" => "sonic_fx_chorus",
+            "ring_mod" => "sonic_fx_ring_mod",
+            "octaver" => "sonic_fx_octaver",
             _ => {
                 eprintln!("[SC] Unknown FX type '{}', using reverb", fx_type);
                 "sonic_fx_reverb"
@@ -690,24 +790,31 @@ impl ScEngine {
         self.next_bus_id.fetch_add(2, Ordering::Relaxed)
     }
 
-    /// Return the current output bus: top of the FX bus stack, or 0 (hardware out).
-    fn current_out_bus(&self) -> i32 {
-        let stack = self.fx_bus_stack.lock();
-        if let Some(&(bus_id, _, _)) = stack.last() {
+    /// Return the output bus for a given FX context.
+    /// If fx_context is 0 (no FX), returns hardware bus 0.
+    /// Otherwise looks up the bus allocated for that FX block.
+    fn bus_for_fx_context(&self, fx_context: u64) -> i32 {
+        if fx_context == 0 {
+            return 0;
+        }
+        let map = self.fx_bus_map.lock();
+        if let Some(&(bus_id, _)) = map.get(&fx_context) {
             bus_id
         } else {
-            0 // hardware output
+            eprintln!("[SC] Warning: fx_context {} not found in bus map, using hardware out", fx_context);
+            0
         }
     }
 
-    /// Push a new FX bus onto the stack.
+    /// Push a new FX bus for the given fx_id.
     ///
     /// Allocates a private audio bus, creates an FX synth that reads from
-    /// that bus and writes to the *previous* output bus (or hardware 0).
-    /// Subsequent synths/samples will route their output to this new bus.
-    pub fn push_fx_bus(&self, fx_type: &str, params: &[(String, f32)]) -> Result<(), String> {
+    /// that bus and writes to the parent FX bus (or hardware 0).
+    /// The fx_id is stored in the map so subsequent play commands with
+    /// the matching fx_context route to this bus.
+    pub fn push_fx_bus(&self, fx_id: u64, parent_fx_id: u64, fx_type: &str, params: &[(String, f32)]) -> Result<(), String> {
         let new_bus = self.alloc_audio_bus();
-        let parent_bus = self.current_out_bus();
+        let parent_bus = self.bus_for_fx_context(parent_fx_id);
 
         let fx_node_id = self.alloc_node_id();
         let def_name = match fx_type {
@@ -719,10 +826,14 @@ impl ScEngine {
             "hpf" | "rhpf" | "nrhpf" => "sonic_fx_hpf",
             "flanger" => "sonic_fx_flanger",
             "compressor" => "sonic_fx_compressor",
-            "bitcrusher" => "sonic_fx_bitcrusher",
+            "bitcrusher" | "krush" => "sonic_fx_bitcrusher",
             "pan" => "sonic_fx_pan",
-            "wobble" => "sonic_fx_wobble",
+            "wobble" | "ixi_techno" => "sonic_fx_wobble",
             "tremolo" => "sonic_fx_tremolo",
+            "normaliser" | "normalizer" => "sonic_fx_normaliser",
+            "chorus" => "sonic_fx_chorus",
+            "ring_mod" => "sonic_fx_ring_mod",
+            "octaver" => "sonic_fx_octaver",
             _ => {
                 eprintln!("[SC] Unknown FX type '{}', using reverb", fx_type);
                 "sonic_fx_reverb"
@@ -732,11 +843,11 @@ impl ScEngine {
         // FX synths use an insert-effect pattern:
         //   in_bus = new_bus  (reads source audio from here)
         //   out    = parent_bus (writes processed audio to parent)
-        // Placed at tail of FX_GROUP so they process audio after sources.
+        // Placed at HEAD of FX_GROUP so inner FX processes before outer FX.
         let mut args = vec![
             OscType::String(def_name.to_string()),
             OscType::Int(fx_node_id),
-            OscType::Int(ADD_TO_TAIL),
+            OscType::Int(ADD_TO_HEAD),
             OscType::Int(FX_GROUP),
             OscType::String("in_bus".to_string()),
             OscType::Int(new_bus),
@@ -752,23 +863,27 @@ impl ScEngine {
         self.send_osc_msg("/s_new", args)?;
 
         eprintln!(
-            "[SC] Pushed FX bus: type={}, bus={}, parent_bus={}, node={}",
-            fx_type, new_bus, parent_bus, fx_node_id
+            "[SC] Pushed FX bus: type={}, bus={}, parent_bus={}, node={}, fx_id={}",
+            fx_type, new_bus, parent_bus, fx_node_id, fx_id
         );
 
-        self.fx_bus_stack.lock().push((new_bus, fx_node_id, 0));
+        self.fx_bus_map.lock().insert(fx_id, (new_bus, fx_node_id));
         Ok(())
     }
 
-    /// Pop the top FX bus from the stack, freeing the FX synth node.
-    pub fn pop_fx_bus(&self) -> Result<(), String> {
-        let entry = self.fx_bus_stack.lock().pop();
-        if let Some((_bus_id, fx_node_id, _)) = entry {
-            // Free the FX synth node — it will stop processing
-            let _ = self.send_osc_msg("/n_free", vec![OscType::Int(fx_node_id)]);
-            eprintln!("[SC] Popped FX bus: node={}", fx_node_id);
+    /// Remove the FX bus for the given fx_id.
+    /// Does NOT immediately free the FX synth node — the SynthDef's
+    /// DetectSilence UGen will auto-free the node once audio stops
+    /// flowing through it. This prevents cutting off note release tails.
+    pub fn pop_fx_bus(&self, fx_id: u64) -> Result<(), String> {
+        let entry = self.fx_bus_map.lock().remove(&fx_id);
+        if let Some((_bus_id, fx_node_id)) = entry {
+            // Don't /n_free — let DetectSilence in the SynthDef auto-free
+            // when audio stops flowing. This keeps the FX synth alive
+            // during note release phases.
+            eprintln!("[SC] Popped FX bus: node={}, fx_id={} (auto-free via DetectSilence)", fx_node_id, fx_id);
         } else {
-            eprintln!("[SC] Warning: pop_fx_bus called with empty stack");
+            eprintln!("[SC] Warning: pop_fx_bus called with unknown fx_id={}", fx_id);
         }
         Ok(())
     }
@@ -786,19 +901,19 @@ impl ScEngine {
             "-u",
             &self.sc_port.to_string(),
             "-a",
-            "1024",  // max number of synths
+            "4096", // max number of synths (high for complex pieces with many FX chains)
             "-i",
-            "0",     // no audio inputs
+            "0", // no audio inputs
             "-o",
-            "2",     // stereo output
+            "2", // stereo output
             "-b",
-            "1026",  // number of buffers
+            "1026", // number of buffers
             "-m",
             "131072", // memory size
             "-R",
-            "0",     // no rendezvous
+            "0", // no rendezvous
             "-l",
-            "1",     // max logins
+            "1", // max logins
         ]);
 
         // In bundled mode, tell scsynth where to find UGen plugins
@@ -836,7 +951,10 @@ impl ScEngine {
 
         while start.elapsed() < timeout {
             if self.ping_server() {
-                eprintln!("[SC] Server is alive (boot took {:.1}s)", start.elapsed().as_secs_f64());
+                eprintln!(
+                    "[SC] Server is alive (boot took {:.1}s)",
+                    start.elapsed().as_secs_f64()
+                );
                 return Ok(());
             }
             std::thread::sleep(poll_interval);
@@ -867,7 +985,9 @@ impl ScEngine {
 
     /// Compile SynthDefs by writing a .scd script and running sclang
     fn compile_synthdefs(&self) -> Result<(), String> {
-        let sclang = self.sclang_path.as_ref()
+        let sclang = self
+            .sclang_path
+            .as_ref()
             .ok_or("sclang not found — cannot compile SynthDefs. Please install SuperCollider.")?;
 
         // Write the SynthDef compilation script
@@ -899,6 +1019,8 @@ impl ScEngine {
 
         if output.status.success() || stdout.contains("SynthDefs compiled successfully") {
             eprintln!("[SC] SynthDefs compiled successfully");
+            // Write version marker so we don't recompile next boot
+            sc_synthdefs::write_version_marker(&self.synthdefs_dir);
             Ok(())
         } else {
             Err(format!(
@@ -910,29 +1032,293 @@ impl ScEngine {
         }
     }
 
-    /// Load compiled SynthDefs into scsynth
+    /// Load compiled SynthDefs into scsynth (full load during boot)
     fn load_synthdefs(&self) -> Result<(), String> {
-        let mut dir_str = self.synthdefs_dir.to_string_lossy().replace('\\', "/");
-        // Strip Windows extended-length prefix if present (scsynth can't parse it)
-        if dir_str.starts_with("//?/") {
-            dir_str = dir_str[4..].to_string();
-        }
-        eprintln!("[SC] Loading SynthDefs from {}", dir_str);
+        self.load_synthdefs_full().map(|_| ())
+    }
 
+    /// Full SynthDef loading — used during boot.
+    /// Uses multiple strategies to ensure all SynthDefs are available.
+    fn load_synthdefs_full(&self) -> Result<String, String> {
+        let raw_dir = self.synthdefs_dir.to_string_lossy().to_string();
+        let clean_dir = if raw_dir.starts_with(r"\\?\") {
+            raw_dir[4..].to_string()
+        } else {
+            raw_dir.clone()
+        };
+        eprintln!("[SC] SynthDefs directory: {}", clean_dir);
+
+        self.drain_pending_messages();
+
+        // Strategy 1: /d_loadDir with native path
+        eprintln!("[SC] Trying /d_loadDir with native path: {}", clean_dir);
+        let _ = self.send_osc_msg("/d_loadDir", vec![OscType::String(clean_dir.clone())]);
+        let dir_load_ok = self
+            .wait_for_done("/d_loadDir", Duration::from_secs(3))
+            .is_ok();
+        if dir_load_ok {
+            eprintln!("[SC] /d_loadDir acknowledged (native path)");
+        }
+
+        // Strategy 2: Also try with forward slashes
+        let fwd_dir = clean_dir.replace('\\', "/");
+        if fwd_dir != clean_dir {
+            self.drain_pending_messages();
+            eprintln!(
+                "[SC] Also trying /d_loadDir with forward slashes: {}",
+                fwd_dir
+            );
+            let _ = self.send_osc_msg("/d_loadDir", vec![OscType::String(fwd_dir.clone())]);
+            let _ = self.wait_for_done("/d_loadDir", Duration::from_secs(3));
+        }
+
+        // Strategy 3: Load each .scsyndef file individually
+        let scsyndef_files: Vec<_> = std::fs::read_dir(&self.synthdefs_dir)
+            .map_err(|e| format!("Cannot read synthdefs dir: {}", e))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .map_or(false, |ext| ext == "scsyndef")
+            })
+            .collect();
+
+        if !scsyndef_files.is_empty() {
+            eprintln!(
+                "[SC] Loading {} individual .scsyndef files via /d_load...",
+                scsyndef_files.len()
+            );
+            let mut loaded_count = 0;
+            let mut failed_count = 0;
+            for entry in &scsyndef_files {
+                let file_path = entry.path();
+                let mut path_str = file_path.to_string_lossy().to_string();
+                if path_str.starts_with(r"\\?\") {
+                    path_str = path_str[4..].to_string();
+                }
+                self.drain_pending_messages();
+                if self
+                    .send_osc_msg("/d_load", vec![OscType::String(path_str.clone())])
+                    .is_ok()
+                {
+                    match self.wait_for_done("/d_load", Duration::from_secs(2)) {
+                        Ok(()) => {
+                            loaded_count += 1;
+                        }
+                        Err(_) => {
+                            eprintln!("[SC] Failed to load: {}", path_str);
+                            failed_count += 1;
+                        }
+                    }
+                }
+            }
+            eprintln!(
+                "[SC] Individual load complete: {} loaded, {} failed",
+                loaded_count, failed_count
+            );
+        }
+
+        // Strategy 4: Send raw bytes via /d_recv for critical defs
+        self.load_synthdef_via_recv("sonic_beep")?;
+        self.load_synthdef_via_recv("sonic_supersaw")?;
+        self.load_synthdef_via_recv("sonic_saw")?;
+        self.load_synthdef_via_recv("sonic_square")?;
+        self.load_synthdef_via_recv("sonic_playbuf")?;
+
+        // Verify at least sonic_beep is available
+        self.verify_synthdef_available("sonic_beep")?;
+
+        // Mark SynthDefs as loaded so reload_synthdefs() can skip the heavy reload
+        self.synthdefs_loaded.store(true, Ordering::Relaxed);
+
+        eprintln!("[SC] SynthDefs loaded from {}", clean_dir);
+        Ok(clean_dir)
+    }
+
+    /// Lightweight SynthDef reload — used before each run_code().
+    /// Sends all .scsyndef files via /d_recv (the most reliable loading method).
+    /// Fast because scsynth caches unchanged SynthDefs.
+    pub fn reload_synthdefs(&self) -> Result<String, String> {
+        let raw_dir = self.synthdefs_dir.to_string_lossy().to_string();
+        let clean_dir = if raw_dir.starts_with(r"\\?\") {
+            raw_dir[4..].to_string()
+        } else {
+            raw_dir.clone()
+        };
+
+        // If SynthDefs were already loaded at boot, skip the expensive reload.
+        // scsynth keeps SynthDefs in memory until the server restarts.
+        if self.synthdefs_loaded.load(Ordering::Relaxed) {
+            eprintln!("[SC] reload_synthdefs: skipped (already loaded at boot)");
+            return Ok(clean_dir);
+        }
+
+        // SynthDefs not yet loaded — send all .scsyndef files via /d_recv
+        let scsyndef_files: Vec<_> = std::fs::read_dir(&self.synthdefs_dir)
+            .map_err(|e| format!("Cannot read synthdefs dir: {}", e))?
+            .filter_map(|entry| entry.ok())
+            .filter(|entry| {
+                entry
+                    .path()
+                    .extension()
+                    .map_or(false, |ext| ext == "scsyndef")
+            })
+            .collect();
+
+        let mut loaded = 0;
+        for entry in &scsyndef_files {
+            let file_path = entry.path();
+            let name = file_path
+                .file_stem()
+                .map(|s| s.to_string_lossy().to_string())
+                .unwrap_or_default();
+            if self.load_synthdef_via_recv(&name).is_ok() {
+                loaded += 1;
+            }
+        }
+        eprintln!(
+            "[SC] reload_synthdefs: {}/{} via /d_recv",
+            loaded,
+            scsyndef_files.len()
+        );
+
+        // Mark as loaded for subsequent runs
+        self.synthdefs_loaded.store(true, Ordering::Relaxed);
+
+        Ok(clean_dir)
+    }
+
+    /// Load a single .scsyndef file by sending its raw bytes via /d_recv.
+    /// This bypasses all filesystem path issues on scsynth's side.
+    fn load_synthdef_via_recv(&self, name: &str) -> Result<(), String> {
+        let file_path = self.synthdefs_dir.join(format!("{}.scsyndef", name));
+        if !file_path.exists() {
+            eprintln!(
+                "[SC] /d_recv skip (file not found): {}",
+                file_path.display()
+            );
+            return Ok(()); // Not an error — optional SynthDef
+        }
+        let data = std::fs::read(&file_path)
+            .map_err(|e| format!("Cannot read {}: {}", file_path.display(), e))?;
+        eprintln!("[SC] /d_recv {} ({} bytes)", name, data.len());
+
+        self.drain_pending_messages();
+        self.send_osc_msg("/d_recv", vec![OscType::Blob(data)])?;
+        self.wait_for_done("/d_recv", Duration::from_secs(3))?;
+        Ok(())
+    }
+
+    /// Verify a SynthDef is available by creating a test node and checking for /fail.
+    /// The test node plays at zero amplitude so it's inaudible.
+    fn verify_synthdef_available(&self, def_name: &str) -> Result<(), String> {
+        let test_node_id = self.alloc_node_id();
+        self.drain_pending_messages();
+
+        // Create a node at amp=0 so it's silent
         self.send_osc_msg(
-            "/d_loadDir",
-            vec![OscType::String(dir_str)],
+            "/s_new",
+            vec![
+                OscType::String(def_name.to_string()),
+                OscType::Int(test_node_id),
+                OscType::Int(ADD_TO_HEAD),
+                OscType::Int(SOURCE_GROUP),
+                OscType::String("amp".to_string()),
+                OscType::Float(0.0),
+            ],
         )?;
 
-        // Wait for /done
-        self.wait_for_done("/d_loadDir", Duration::from_secs(5))?;
+        // Brief check for /fail
+        std::thread::sleep(Duration::from_millis(50));
+        let _ = self.socket.set_nonblocking(true);
+        let mut synthdef_not_found = false;
+        for _ in 0..10 {
+            let mut buf = [0u8; 65536];
+            match self.socket.recv_from(&mut buf) {
+                Ok((size, _)) => {
+                    if let Ok((_, packet)) = decoder::decode_udp(&buf[..size]) {
+                        if let OscPacket::Message(msg) = &packet {
+                            if msg.addr == "/fail" {
+                                let detail: String = msg
+                                    .args
+                                    .iter()
+                                    .map(|a| format!("{:?}", a))
+                                    .collect::<Vec<_>>()
+                                    .join(" ");
+                                // Only treat "SynthDef not found" as a real failure.
+                                // "duplicate node ID" is harmless (node from previous session).
+                                if detail.contains("not found") || detail.contains("SynthDef") {
+                                    eprintln!(
+                                        "[SC] SYNTHDEF NOT FOUND: '{}': {}",
+                                        def_name, detail
+                                    );
+                                    self.sc_errors.lock().push(format!(
+                                        "SynthDef '{}' not available in scsynth: {}",
+                                        def_name, detail
+                                    ));
+                                    synthdef_not_found = true;
+                                } else {
+                                    eprintln!(
+                                        "[SC] Verify '{}' got /fail (non-fatal): {}",
+                                        def_name, detail
+                                    );
+                                }
+                                break;
+                            }
+                        }
+                    }
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = self.socket.set_nonblocking(false);
+        let _ = self
+            .socket
+            .set_read_timeout(Some(Duration::from_millis(500)));
 
-        eprintln!("[SC] SynthDefs loaded");
-        Ok(())
+        // Free the test node
+        let _ = self.send_osc_msg("/n_free", vec![OscType::Int(test_node_id)]);
+
+        if synthdef_not_found {
+            Err(format!(
+                "SynthDef '{}' verification failed — not found in scsynth",
+                def_name
+            ))
+        } else {
+            eprintln!("[SC] SynthDef '{}' verified OK", def_name);
+            Ok(())
+        }
+    }
+
+    /// Drain any pending OSC messages from scsynth without processing them.
+    /// Used before sending a command when we need a clean response channel.
+    fn drain_pending_messages(&self) {
+        let _ = self.socket.set_nonblocking(true);
+        let mut count = 0;
+        loop {
+            let mut buf = [0u8; 65536];
+            match self.socket.recv_from(&mut buf) {
+                Ok(_) => {
+                    count += 1;
+                }
+                Err(_) => break,
+            }
+        }
+        let _ = self.socket.set_nonblocking(false);
+        let _ = self
+            .socket
+            .set_read_timeout(Some(Duration::from_millis(500)));
+        if count > 0 {
+            eprintln!("[SC] Drained {} stale messages before SynthDef load", count);
+        }
     }
 
     /// Set up the node group hierarchy
     fn setup_groups(&self) -> Result<(), String> {
+        // Enable server notifications so we receive /fail for bad /s_new etc.
+        self.send_osc_msg("/notify", vec![OscType::Int(1)])?;
+
         // Create source group (for synths and samples)
         self.send_osc_msg(
             "/g_new",
@@ -963,8 +1349,52 @@ impl ScEngine {
             ],
         )?;
 
-        eprintln!("[SC] Groups created (source={}, fx={}, monitor={})",
-            SOURCE_GROUP, FX_GROUP, MONITOR_GROUP);
+        eprintln!(
+            "[SC] Groups created (source={}, fx={}, monitor={})",
+            SOURCE_GROUP, FX_GROUP, MONITOR_GROUP
+        );
+
+        // Brief wait for group creation to settle, then verify via node tree
+        std::thread::sleep(Duration::from_millis(100));
+        self.drain_pending_messages();
+        self.send_osc_msg(
+            "/g_queryTree",
+            vec![OscType::Int(ROOT_GROUP), OscType::Int(0)],
+        )?;
+        let _ = self.socket.set_nonblocking(false);
+        let _ = self
+            .socket
+            .set_read_timeout(Some(Duration::from_millis(500)));
+        // Try a few times in case other async responses arrive first
+        for _ in 0..5 {
+            match self.recv_osc() {
+                Ok(OscPacket::Message(msg)) if msg.addr == "/g_queryTree.reply" => {
+                    let num_children = msg
+                        .args
+                        .get(1)
+                        .and_then(|a| {
+                            if let OscType::Int(n) = a {
+                                Some(*n)
+                            } else {
+                                None
+                            }
+                        })
+                        .unwrap_or(-1);
+                    eprintln!("[SC] Node tree OK: root has {} children", num_children);
+                    break;
+                }
+                Ok(OscPacket::Message(msg)) => {
+                    // Other message (e.g., /done "/notify") — skip it
+                    eprintln!(
+                        "[SC] Skipping async response: {} (waiting for /g_queryTree.reply)",
+                        msg.addr
+                    );
+                    continue;
+                }
+                _ => break,
+            }
+        }
+
         Ok(())
     }
 
@@ -1013,47 +1443,17 @@ impl ScEngine {
         Ok(())
     }
 
-    /// Poll the scope buffer to update the waveform display
-    pub fn poll_waveform(&self) {
-        // Request buffer data from scsynth
-        // /b_getn [buf_num, start_index, num_samples]
-        if self.send_osc_msg(
+    /// Send a non-blocking request for scope buffer data from scsynth.
+    /// The response (/b_setn) will be picked up by the next `process_incoming` call.
+    pub fn request_scope_buffer(&self) {
+        let _ = self.send_osc_msg(
             "/b_getn",
             vec![
                 OscType::Int(self.scope_buffer_id),
                 OscType::Int(0),
                 OscType::Int(2048),
             ],
-        ).is_err() {
-            return;
-        }
-
-        // Try to receive the response
-        if let Ok(packet) = self.recv_osc() {
-            if let OscPacket::Message(msg) = packet {
-                if msg.addr == "/b_setn" {
-                    // Extract float values from the response
-                    let mut waveform = Vec::with_capacity(2048);
-                    // Skip first 3 args (buf_num, start, count)
-                    for arg in msg.args.iter().skip(3) {
-                        if let OscType::Float(v) = arg {
-                            waveform.push(*v);
-                        }
-                    }
-                    if !waveform.is_empty() {
-                        let mut state = self.state.lock();
-                        state.waveform_buffer = waveform;
-                    }
-                }
-                // Check for meter data (is_playing indicator)
-                if msg.addr == "/sonic/meter" {
-                    let mut state = self.state.lock();
-                    if let Some(OscType::Float(amp)) = msg.args.get(2) {
-                        state.is_playing = *amp > 0.001;
-                    }
-                }
-            }
-        }
+        );
     }
 
     /// Process any pending OSC messages from scsynth (e.g., meter updates)
@@ -1074,6 +1474,32 @@ impl ScEngine {
                                     self.state.lock().is_playing = amp > 0.001;
                                 }
                             }
+                        } else if msg.addr == "/fail" {
+                            // Log SC server errors (e.g., SynthDef not found)
+                            let err_detail: String = msg
+                                .args
+                                .iter()
+                                .map(|a| format!("{:?}", a))
+                                .collect::<Vec<_>>()
+                                .join(" ");
+                            eprintln!("[SC] SERVER ERROR: /fail {}", err_detail);
+                            self.sc_errors
+                                .lock()
+                                .push(format!("SC server error: /fail {}", err_detail));
+                        } else if msg.addr == "/b_setn" {
+                            // Scope buffer data — update waveform display
+                            let mut waveform = Vec::with_capacity(2048);
+                            // Skip first 3 args (buf_num, start, count)
+                            for arg in msg.args.iter().skip(3) {
+                                if let OscType::Float(v) = arg {
+                                    waveform.push(*v);
+                                }
+                            }
+                            if !waveform.is_empty() {
+                                self.state.lock().waveform_buffer = waveform;
+                            }
+                        } else if msg.addr == "/done" {
+                            // Silently consume /done responses
                         }
                     }
                 }
@@ -1081,7 +1507,9 @@ impl ScEngine {
             }
         }
         let _ = self.socket.set_nonblocking(false);
-        let _ = self.socket.set_read_timeout(Some(Duration::from_millis(500)));
+        let _ = self
+            .socket
+            .set_read_timeout(Some(Duration::from_millis(500)));
     }
 
     // ================================================================
@@ -1095,8 +1523,7 @@ impl ScEngine {
             args,
         };
         let packet = OscPacket::Message(msg);
-        let buf = encoder::encode(&packet)
-            .map_err(|e| format!("OSC encode error: {}", e))?;
+        let buf = encoder::encode(&packet).map_err(|e| format!("OSC encode error: {}", e))?;
 
         self.socket
             .send_to(&buf, format!("127.0.0.1:{}", self.sc_port))
@@ -1113,8 +1540,8 @@ impl ScEngine {
             .recv_from(&mut buf)
             .map_err(|e| format!("OSC recv error: {}", e))?;
 
-        let (_, packet) = decoder::decode_udp(&buf[..size])
-            .map_err(|e| format!("OSC decode error: {:?}", e))?;
+        let (_, packet) =
+            decoder::decode_udp(&buf[..size]).map_err(|e| format!("OSC decode error: {:?}", e))?;
 
         Ok(packet)
     }
@@ -1172,7 +1599,6 @@ impl Drop for ScEngine {
     }
 }
 
-
 // ================================================================
 // HELPER FUNCTIONS
 // ================================================================
@@ -1187,19 +1613,28 @@ fn find_bundled_scsynth(bundle_dir: &std::path::Path) -> Option<(PathBuf, PathBu
 
     let scsynth_path = bundle_dir.join(scsynth_name);
     if !scsynth_path.exists() {
-        eprintln!("[SC] Bundled scsynth not found at: {}", scsynth_path.display());
+        eprintln!(
+            "[SC] Bundled scsynth not found at: {}",
+            scsynth_path.display()
+        );
         return None;
     }
 
     let plugins_dir = bundle_dir.join("plugins");
     if !plugins_dir.exists() {
-        eprintln!("[SC] Warning: UGen plugins directory not found at: {}", plugins_dir.display());
+        eprintln!(
+            "[SC] Warning: UGen plugins directory not found at: {}",
+            plugins_dir.display()
+        );
         // Don't fail — scsynth might work with default plugins path
     }
 
     let synthdefs_dir = bundle_dir.join("synthdefs");
     if !synthdefs_dir.exists() {
-        eprintln!("[SC] Warning: SynthDefs directory not found at: {}", synthdefs_dir.display());
+        eprintln!(
+            "[SC] Warning: SynthDefs directory not found at: {}",
+            synthdefs_dir.display()
+        );
         // Create it — SynthDefs might be compiled later
         let _ = std::fs::create_dir_all(&synthdefs_dir);
     }
@@ -1231,10 +1666,16 @@ pub fn find_sc_bundle_dir() -> Option<PathBuf> {
     // Helper: check if a bundle dir looks complete (has scsynth + synthdefs + plugins)
     let bundle_score = |dir: &std::path::Path| -> u8 {
         let mut score = 0u8;
-        if dir.join(scsynth_name).exists() { score += 1; }
-        if dir.join("plugins").exists() { score += 1; }
+        if dir.join(scsynth_name).exists() {
+            score += 1;
+        }
+        if dir.join("plugins").exists() {
+            score += 1;
+        }
         // Check for at least one compiled SynthDef
-        if dir.join("synthdefs").join("sonic_beep.scsyndef").exists() { score += 1; }
+        if dir.join("synthdefs").join("sonic_beep.scsyndef").exists() {
+            score += 1;
+        }
         score
     };
 
@@ -1244,7 +1685,12 @@ pub fn find_sc_bundle_dir() -> Option<PathBuf> {
             return;
         }
         let score = bundle_score(&candidate);
-        eprintln!("[SC] Candidate sc-bundle ({}, score={}): {}", label, score, candidate.display());
+        eprintln!(
+            "[SC] Candidate sc-bundle ({}, score={}): {}",
+            label,
+            score,
+            candidate.display()
+        );
         if best.as_ref().map_or(true, |(_, bs)| score > *bs) {
             best = Some((candidate, score));
         }
@@ -1284,7 +1730,11 @@ pub fn find_sc_bundle_dir() -> Option<PathBuf> {
     }
 
     if let Some((path, score)) = best {
-        eprintln!("[SC] Selected sc-bundle (score={}): {}", score, path.display());
+        eprintln!(
+            "[SC] Selected sc-bundle (score={}): {}",
+            score,
+            path.display()
+        );
         Some(path)
     } else {
         None
