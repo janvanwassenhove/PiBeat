@@ -54,6 +54,14 @@ jobs:
       - name: Install frontend dependencies
         run: npm ci
 
+      - name: Ensure sc-bundle exists
+        shell: bash
+        run: |
+          mkdir -p src-tauri/sc-bundle
+          if [ -z "$(ls -A src-tauri/sc-bundle 2>/dev/null)" ]; then
+            echo "placeholder" > src-tauri/sc-bundle/.gitkeep
+          fi
+
       - name: Build Tauri app
         uses: tauri-apps/tauri-action@v0
         env:
