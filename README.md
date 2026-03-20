@@ -11,6 +11,16 @@ PiBeat is a live-coding music environment that combines:
 - **Real-time editing** with Monaco Editor and live code execution
 - **Visual feedback** with waveform visualization and effects panels
 
+## 📸 Screenshots
+
+| Editor & Waveform | Agent Chat |
+|:-:|:-:|
+| ![Editor](screenshots/editor.png) | ![Agent Chat](screenshots/agent-chat.png) |
+
+| Timeline View | Band Visualizer |
+|:-:|:-:|
+| ![Timeline](screenshots/timeline.png) | ![Band Visualizer](screenshots/band-visualizer.png) |
+
 ## 🚀 Quick Start
 
 1. **Install Dependencies**

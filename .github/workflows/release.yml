@@ -71,33 +71,11 @@ jobs:
         with:
           tagName: ${{ github.ref_name }}
           releaseName: 'PiBeat ${{ github.ref_name }}'
-          releaseBody: ''
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
-
-  publish-release:
-    needs: build
-    runs-on: ubuntu-latest
-
-    steps:
-      - name: Checkout code
-        uses: actions/checkout@v4
-
-      - name: Get version from tag
-        id: version
-        run: echo "VERSION=${GITHUB_REF#refs/tags/v}" >> $GITHUB_OUTPUT
-
-      - name: Update release with notes and screenshots
-        uses: softprops/action-gh-release@v2
-        with:
-          tag_name: ${{ github.ref_name }}
-          name: 'PiBeat ${{ steps.version.outputs.VERSION }}'
-          draft: false
-          prerelease: false
-          generate_release_notes: true
-          body: |
-            ## 🎵 PiBeat ${{ steps.version.outputs.VERSION }}
+          releaseBody: |
+            ## 🎵 PiBeat
 
             Desktop music live-coding — write Sonic Pi code and hear it instantly.
 
@@ -132,7 +110,15 @@ jobs:
             2. Open the editor and start writing Sonic Pi code
             3. *(Optional)* Open Settings in Agent Chat to configure an AI provider
 
-            ### 🔄 Auto-Update
-            Existing installations will be notified of new versions automatically (requires updater signing keys).
+  publish-release:
+    needs: build
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Un-draft the release
         env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          gh release edit "${{ github.ref_name }}" \
+            --repo "${{ github.repository }}" \
+            --draft=false

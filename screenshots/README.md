@@ -1,6 +1,8 @@
 # PiBeat Screenshots
 
-These screenshots are referenced in GitHub Release notes. Keep them up to date with each major release.
+These screenshots are used in:
+- **[README.md](../README.md)** — project landing page
+- **GitHub Release notes** — via `raw.githubusercontent.com` URLs in [release.yml](../.github/workflows/release.yml)
 
 ## Required Screenshots
 
