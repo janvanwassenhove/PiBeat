@@ -117,3 +117,11 @@ fidelity/fixtures/stress/complex_song.rb
 fidelity/fixtures/stress/deep_fx_chain.rb
 fidelity/fixtures/stress/many_threads.rb
 fidelity/fixtures/stress/rapid_notes.rb
+.github/agents/mity-blog-writer.agent.md
+.github/skills/audience-calibration/SKILL.md
+.github/skills/humor-guardrails/SKILL.md
+.github/skills/mity-blog-style/SKILL.md
+.github/skills/post-formats/SKILL.md
+.github/skills/linkedin-writing/SKILL.md
+.github/skills/social-media-adaptation/SKILL.md
+generated-content/

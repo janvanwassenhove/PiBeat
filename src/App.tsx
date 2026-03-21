@@ -102,7 +102,7 @@ const AboutModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, on
           <span className="about-logo-icon">&#9835;</span>
           <span className="about-logo-text">PiBeat</span>
         </div>
-        <div className="about-version">Version 0.1.0</div>
+        <div className="about-version">Version {__APP_VERSION__}</div>
         <p className="about-description">
           A desktop music live-coding application inspired by Sonic Pi.
           Write code, make music, in real time.
@@ -315,7 +315,7 @@ const App: React.FC = () => {
       </div>
 
       <div className="app-footer">
-        <span className="footer-info">PiBeat v0.1.0</span>
+        <span className="footer-info">PiBeat v{__APP_VERSION__}</span>
         <span className="footer-keys">
           <kbd>Ctrl+Enter</kbd> Run | <kbd>Alt+S</kbd> Stop | <kbd>Ctrl+Shift+R</kbd> Record | <kbd>Ctrl+S</kbd> Save | <kbd>Ctrl+O</kbd> Open
         </span>
