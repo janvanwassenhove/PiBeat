@@ -624,7 +624,20 @@ export const useStore = create<AppStore>((set, get) => ({
 
   stopRecording: async (path?) => {
     try {
-      const result = await invoke<string>('stop_recording', { path: path ?? null });
+      let savePath = path ?? null;
+      if (!savePath) {
+        const chosen = await save({
+          title: 'Save Recording',
+          defaultPath: 'recording.wav',
+          filters: [{ name: 'WAV Audio', extensions: ['wav'] }],
+        });
+        if (!chosen) {
+          // User cancelled — keep recording
+          return;
+        }
+        savePath = chosen;
+      }
+      const result = await invoke<string>('stop_recording', { path: savePath });
       set({ isRecording: false });
       get().addLog('info', `Recording saved: ${result}`);
     } catch (e: any) {
