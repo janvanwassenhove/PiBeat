@@ -1,6 +1,12 @@
+<p align="center">
+  <img src="logo.png" alt="PiBeat Logo" width="200" />
+</p>
+
 # PiBeat
 
 A modern Digital Audio Workstation powered by SuperCollider and Sonic Pi, with AI-assisted music coding capabilities.
+
+> **Learn to code by making music.** PiBeat is perfect for beginners — including kids — who want to start learning programming through creative intent rather than abstract exercises. Write a line of code, hear a beat. With integrated AI agents you don't just *write* music code, you **vibe compose**: describe what you want, and the AI helps you build it. It's coding by intent — the most natural way to start.
 
 ## 🎵 What is PiBeat?
 
