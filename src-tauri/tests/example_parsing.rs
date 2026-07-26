@@ -8,7 +8,23 @@
 use sonic_daw_lib::audio::engine::AudioCommand;
 use sonic_daw_lib::audio::parser::{commands_to_audio, parse_code};
 
-/// Read an example file content
+/// Read an example file, or `None` when it is not present in the working tree.
+///
+/// A few example files (`Test5`, `DiscoTest`) are local scratch files that are
+/// not tracked in git, so tests that depend on them skip instead of failing on
+/// a fresh clone or in CI.
+fn try_read_example(name: &str) -> Option<String> {
+    let path = format!("../examples/{}", name);
+    match std::fs::read_to_string(&path) {
+        Ok(code) => Some(code),
+        Err(_) => {
+            eprintln!("{} not present, skipping", path);
+            None
+        }
+    }
+}
+
+/// Read an example file content (for examples that are tracked in git)
 fn read_example(name: &str) -> String {
     let path = format!("../examples/{}", name);
     std::fs::read_to_string(&path)
@@ -127,7 +143,7 @@ fn test_parse_test4() {
 
 #[test]
 fn test_parse_test5() {
-    let code = read_example("Test5");
+    let Some(code) = try_read_example("Test5") else { return };
     eprintln!("=== Parsing Test5 ({} chars) ===", code.len());
 
     let result = try_parse(&code);
@@ -151,7 +167,7 @@ fn test_parse_test5() {
 #[test]
 fn test_all_examples_no_panic() {
     for name in &["Test1", "Test2", "Test3", "Test4", "Test5"] {
-        let code = read_example(name);
+        let Some(code) = try_read_example(name) else { continue };
         eprintln!("Parsing {} ({} chars)...", name, code.len());
         let _ = try_parse(&code); // Just ensure no panic
         eprintln!("{} parsed without panic", name);
@@ -160,7 +176,7 @@ fn test_all_examples_no_panic() {
 
 #[test]
 fn test_parse_disco() {
-    let code = std::fs::read_to_string("../examples/DiscoTest").expect("read DiscoTest");
+    let Some(code) = try_read_example("DiscoTest") else { return };
     eprintln!("=== Parsing DiscoTest ({} chars) ===", code.len());
     match sonic_daw_lib::audio::parser::parse_code(&code) {
         Ok(parsed) => {
@@ -377,7 +393,7 @@ end"#;
 
 #[test]
 fn test_join_continuation_test5_do_end_balance() {
-    let code = std::fs::read_to_string("../examples/Test5").expect("read Test5");
+    let Some(code) = try_read_example("Test5") else { return };
     let joined = sonic_daw_lib::audio::parser::join_continuation_lines_pub(&code);
     let mut do_count = 0;
     let mut end_count = 0;
