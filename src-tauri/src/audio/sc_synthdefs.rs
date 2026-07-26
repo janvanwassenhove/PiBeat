@@ -196,10 +196,11 @@ SynthDef(\sonic_mod_fm, {{ |out=0, freq=440, amp=1, pan=0, attack=0, decay=0, su
         LFPulse.kr(mod_phase, 0, mod_pulse_width) * 2 - 1,
         LFTri.kr(mod_phase, mod_phase_offset)
     ]);
+    var modulator, sig, env;
     lfo = lfo.linlin(-1, 1, freq, freq * mod_range);
-    var modulator = SinOsc.ar(modFreq) * depth * modFreq;
-    var sig = SinOsc.ar(lfo + modulator);
-    var env = spEnv.(attack, decay, sustain, release, sustain_level, attack_level, decay_level, env_curve);
+    modulator = SinOsc.ar(modFreq) * depth * modFreq;
+    sig = SinOsc.ar(lfo + modulator);
+    env = spEnv.(attack, decay, sustain, release, sustain_level, attack_level, decay_level, env_curve);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
@@ -420,24 +421,24 @@ SynthDef(\sonic_growl, {{ |out=0, freq=440, amp=1, pan=0, attack=0.1, decay=0, s
 // Chip Lead
 SynthDef(\sonic_chip_lead, {{ |out=0, freq=440, amp=1, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, attack_level=1, decay_level=(-1), env_curve=1, width=0|
     var sig = Pulse.ar(freq, (width * 0.5) + 0.5);
-    sig = sig.round(0.125);
     var env = spEnv.(attack, decay, sustain, release, sustain_level, attack_level, decay_level, env_curve);
+    sig = sig.round(0.125);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Chip Bass
 SynthDef(\sonic_chip_bass, {{ |out=0, freq=440, amp=1, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, attack_level=1, decay_level=(-1), env_curve=1|
     var sig = Pulse.ar(freq, 0.5) + Pulse.ar(freq * 0.5, 0.5);
-    sig = sig.round(0.125) * 0.5;
     var env = spEnv.(attack, decay, sustain, release, sustain_level, attack_level, decay_level, env_curve);
+    sig = sig.round(0.125) * 0.5;
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
 // Chip Noise
 SynthDef(\sonic_chip_noise, {{ |out=0, amp=1, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, attack_level=1, decay_level=(-1), env_curve=1, freq=440|
     var sig = LFNoise0.ar(freq * 4);
-    sig = sig.round(0.125);
     var env = spEnv.(attack, decay, sustain, release, sustain_level, attack_level, decay_level, env_curve);
+    sig = sig.round(0.125);
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
 
@@ -472,8 +473,8 @@ SynthDef(\sonic_cnoise, {{ |out=0, amp=1, pan=0, attack=0, decay=0, sustain=0, r
 // Sub Pulse
 SynthDef(\sonic_subpulse, {{ |out=0, freq=440, amp=1, pan=0, attack=0, decay=0, sustain=0, release=1, sustain_level=1, attack_level=1, decay_level=(-1), env_curve=1, cutoff=100, res=0.3|
     var sig = Pulse.ar(freq, 0.5) + SinOsc.ar(freq * 0.5, 0, 0.6);
-    sig = sig * 0.5;
     var env = spEnv.(attack, decay, sustain, release, sustain_level, attack_level, decay_level, env_curve);
+    sig = sig * 0.5;
     sig = RLPF.ar(sig, cutoff.midicps.min(SampleRate.ir * 0.45), res.clip(0.01, 0.99));
     Out.ar(out, Pan2.ar(sig * env * amp, pan));
 }}).writeDefFile(dir);
@@ -768,5 +769,144 @@ pub fn write_version_marker(dir: &Path) {
     let version_file = dir.join("pibeat_synthdef_version.txt");
     if let Err(e) = std::fs::write(&version_file, SYNTHDEF_VERSION) {
         eprintln!("[SC] Failed to write SynthDef version marker: {}", e);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::path::PathBuf;
+
+    fn script() -> String {
+        generate_synthdef_script(&PathBuf::from("/tmp/pibeat-synthdefs"))
+    }
+
+    /// Net bracket delta for a line, used to tell a SynthDef's top-level
+    /// statements apart from continuation lines of a multi-line expression.
+    fn bracket_delta(line: &str) -> i32 {
+        let opens = line.matches(['(', '[', '{']).count() as i32;
+        let closes = line.matches([')', ']', '}']).count() as i32;
+        opens - closes
+    }
+
+    /// sclang requires every `var` declaration to come before the first
+    /// statement of the enclosing block. A single misplaced `var` is not a
+    /// local problem: the whole compilation script is one parenthesised block,
+    /// so sclang refuses to parse it and *no* SynthDef gets compiled.
+    ///
+    /// Five defs shipped with exactly this error, which is why the generated
+    /// script had never successfully compiled. Nothing here can catch a
+    /// semantic mistake — that needs sclang, which CI does not have — but it
+    /// does catch the syntax error that silences everything.
+    #[test]
+    fn synthdefs_declare_all_vars_before_any_statement() {
+        let script = script();
+        let mut current: Option<String> = None;
+        let mut depth = 0i32;
+        let mut base = 0i32;
+        let mut seen_statement = false;
+        let mut violations: Vec<String> = Vec::new();
+
+        for (idx, raw) in script.lines().enumerate() {
+            let line = raw.trim();
+
+            if let Some(rest) = line.strip_prefix("SynthDef(\\") {
+                let name: String = rest
+                    .chars()
+                    .take_while(|c| c.is_alphanumeric() || *c == '_')
+                    .collect();
+                current = Some(name);
+                depth = bracket_delta(line);
+                base = depth;
+                seen_statement = false;
+                continue;
+            }
+            let Some(ref name) = current else { continue };
+            if line.starts_with("}).writeDefFile") {
+                current = None;
+                continue;
+            }
+
+            if depth == base && !line.is_empty() && !line.starts_with("//") {
+                if line.starts_with("var ") {
+                    if seen_statement {
+                        violations.push(format!(
+                            "{} (line {}): `var` after a statement — {}",
+                            name,
+                            idx + 1,
+                            line
+                        ));
+                    }
+                } else {
+                    seen_statement = true;
+                }
+            }
+            depth += bracket_delta(line);
+        }
+
+        assert!(
+            violations.is_empty(),
+            "SynthDefs with sclang var-ordering errors:\n  {}",
+            violations.join("\n  ")
+        );
+    }
+
+    /// Every SynthDef opened must be closed by a `writeDefFile`, and the
+    /// script's outer parenthesised block must balance.
+    #[test]
+    fn synthdef_script_brackets_balance() {
+        let script = script();
+        let opened = script.matches("SynthDef(\\").count();
+        let written = script.matches(").writeDefFile(dir)").count();
+        assert_eq!(
+            opened, written,
+            "{opened} SynthDefs opened but {written} written to disk"
+        );
+
+        let delta: i32 = script.lines().map(bracket_delta).sum();
+        assert_eq!(delta, 0, "unbalanced brackets in the generated script");
+    }
+
+    /// The master mixer is what gives the SuperCollider path Sonic Pi's
+    /// limiter and safety filters; losing it silently would only show up as
+    /// "the output clips now".
+    #[test]
+    fn script_defines_the_master_mixer() {
+        let script = script();
+        assert!(script.contains("SynthDef(\\sonic_mixer"));
+        for ugen in ["LeakDC.ar", "Limiter.ar", "clip2(1)", "ReplaceOut.ar"] {
+            assert!(
+                script.contains(ugen),
+                "master mixer should use {ugen}"
+            );
+        }
+    }
+
+    /// Every note-producing SynthDef should take the envelope through the
+    /// shared `spEnv` helper, so `env_curve`/`attack_level`/`decay_level`
+    /// behave the same everywhere.
+    #[test]
+    fn envelope_synthdefs_use_the_shared_shaped_adsr() {
+        let script = script();
+        assert!(script.contains("var spEnv = {"), "spEnv helper should exist");
+        assert!(
+            !script.contains("Env([0, 1, sustain_level, sustain_level, 0]"),
+            "no SynthDef should still build the old hardcoded linear envelope"
+        );
+        // Anything declaring sustain_level should also declare the three
+        // shaping opts, or a caller passing them would get a /fail from
+        // scsynth.
+        for def in script.split("SynthDef(\\").skip(1) {
+            let header = def.lines().next().unwrap_or("");
+            let name: String = def.chars().take_while(|c| c.is_alphanumeric() || *c == '_').collect();
+            if header.contains("sustain_level=") {
+                for opt in ["attack_level=", "decay_level=", "env_curve="] {
+                    assert!(
+                        header.contains(opt),
+                        "{name} declares sustain_level but not {opt}"
+                    );
+                }
+            }
+        }
     }
 }

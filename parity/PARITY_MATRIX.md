@@ -137,13 +137,13 @@ All of these run from a clean clone (`cargo test` in `src-tauri/`).
 
 | Metric | Count |
 |--------|-------|
-| Library unit tests | 51 |
+| Library unit tests | 55 |
 | Audio comparison tests | 8 |
 | Disco groove fixture test | 1 |
 | Example parsing tests | 13 |
 | Fidelity snapshot tests | 72 |
 | Parity validation tests | 204 |
-| **Total** | **349** |
+| **Total** | **353** |
 
 ## Known Gaps
 

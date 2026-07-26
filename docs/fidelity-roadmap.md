@@ -92,7 +92,7 @@ synth.
 | cpal master chain | ⬜ Todo | The built-in engine still sums straight to the device |
 
 ## Definition of Done
-- [x] `cargo test` all green (349 tests, all runnable from a clean clone)
+- [x] `cargo test` all green (353 tests, all runnable from a clean clone)
 - [x] Fidelity test fixtures exist for all supported features
 - [x] Event-stream snapshot tests verify parser output
 - [x] Audio comparison harness exists and self-tests pass

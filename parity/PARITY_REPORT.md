@@ -125,13 +125,14 @@ Parity*, *Note Timing*, and *How `sync/cue` Works Without Threads* below.
 
 ## Test Coverage
 
-349 tests, all passing, all runnable from a clean clone (`cargo test` in
+353 tests, all passing, all runnable from a clean clone (`cargo test` in
 `src-tauri/`). Previously the integration suites could not even compile outside
 the author's working tree: `fidelity/fixtures/` was gitignored while
 `disco_groove_test.rs` pulled a fixture in with `include_str!`.
 
-### Library unit tests (51)
-- Parser, synth, visualizer internals
+### Library unit tests (55)
+- Parser, synth, visualizer internals, and static checks on the generated
+  SuperCollider SynthDef script
 
 ### Parity validation tests (204)
 - Synths, FX, samples, timing, envelopes, conditionals, ADSR, at/time_warp,
