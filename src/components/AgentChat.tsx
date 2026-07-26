@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStore, AgentMessage } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { FaTimes, FaPaperPlane, FaCode, FaMagic, FaTrash, FaPlus, FaCog, FaMusic, FaInfoCircle, FaLightbulb } from 'react-icons/fa';
 import { reactiveAgentProcess, setStoredApiKey, getApiKey, AVAILABLE_MODELS, LLMProvider, ModelId } from '../llm';
 import DetachablePanel from './DetachablePanel';
@@ -19,7 +20,23 @@ const AgentChat: React.FC = () => {
     setAgentProvider,
     setAgentModel,
     userSamples,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      showAgentChat: s.showAgentChat,
+      toggleAgentChat: s.toggleAgentChat,
+      agentMessages: s.agentMessages,
+      addAgentMessage: s.addAgentMessage,
+      clearAgentMessages: s.clearAgentMessages,
+      buffers: s.buffers,
+      activeBufferId: s.activeBufferId,
+      updateBufferCode: s.updateBufferCode,
+      agentProvider: s.agentProvider,
+      agentModel: s.agentModel,
+      setAgentProvider: s.setAgentProvider,
+      setAgentModel: s.setAgentModel,
+      userSamples: s.userSamples,
+    })),
+  );
 
   const [input, setInput] = useState('');
   const [isThinking, setIsThinking] = useState(false);

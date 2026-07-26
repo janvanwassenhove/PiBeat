@@ -2,7 +2,7 @@ import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
 import { emit } from '@tauri-apps/api/event';
 import { open, save } from '@tauri-apps/plugin-dialog';
-import { LLMProvider, ModelId } from './llm';
+import type { LLMProvider, ModelId } from './llm';
 
 export type AppTheme = 'pibeat' | 'sonicpi' | 'amber';
 

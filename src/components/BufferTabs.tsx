@@ -1,5 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import {
   FaPlus,
   FaTimes,
@@ -19,7 +20,20 @@ const BufferTabs: React.FC = () => {
     loadBufferFromFile,
     viewMode,
     toggleViewMode,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      buffers: s.buffers,
+      activeBufferId: s.activeBufferId,
+      setActiveBuffer: s.setActiveBuffer,
+      addBuffer: s.addBuffer,
+      removeBuffer: s.removeBuffer,
+      renameBuffer: s.renameBuffer,
+      saveBufferToFile: s.saveBufferToFile,
+      loadBufferFromFile: s.loadBufferFromFile,
+      viewMode: s.viewMode,
+      toggleViewMode: s.toggleViewMode,
+    })),
+  );
 
   const [editingId, setEditingId] = useState<number | null>(null);
   const [editName, setEditName] = useState('');

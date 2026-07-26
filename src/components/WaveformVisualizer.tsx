@@ -36,7 +36,13 @@ const WaveformVisualizer: React.FC = () => {
     scopeModeRef.current = scopeMode;
   }, [scopeMode]);
 
-  // Fetch waveform data on a fixed interval, bypassing Zustand entirely
+  // Fetch waveform data on a fixed interval, bypassing Zustand entirely.
+  //
+  // Only while something is playing: an idle scope shows a flat line, and
+  // polling for it was costing 30 IPC round trips a second forever. On the
+  // SuperCollider path each one also pumps the OSC socket, so this was the
+  // app's single busiest idle activity. One final fetch after playback stops
+  // flushes the tail of the sound out of the display.
   useEffect(() => {
     const fetchWaveform = async () => {
       if (fetchingRef.current) return; // skip if previous call still in-flight
@@ -51,11 +57,41 @@ const WaveformVisualizer: React.FC = () => {
       }
     };
 
+    if (!isPlaying) {
+      // Settle the display on the last of the audio, then stop polling.
+      const settle = setTimeout(() => {
+        fetchWaveform().then(() => {
+          waveformRef.current = [];
+        });
+      }, FETCH_INTERVAL_MS);
+      return () => clearTimeout(settle);
+    }
+
+    fetchWaveform();
     fetchTimerRef.current = setInterval(fetchWaveform, FETCH_INTERVAL_MS);
     return () => {
       if (fetchTimerRef.current) clearInterval(fetchTimerRef.current);
+      fetchTimerRef.current = null;
     };
-  }, []);
+  }, [isPlaying]);
+
+  // Paint one frame from the current buffer. Held in a ref so the resize
+  // observer can repaint while idle, when no animation loop is running.
+  const paintRef = useRef<() => void>(() => {});
+  paintRef.current = () => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return;
+    const mode = scopeModeRef.current;
+    if (mode === 'bars') {
+      drawBars(ctx, canvas.width, canvas.height, waveformRef.current, theme);
+    } else if (mode === 'lissajous') {
+      drawLissajous(ctx, canvas.width, canvas.height, waveformRef.current, theme);
+    } else {
+      drawWaveform(ctx, canvas.width, canvas.height, waveformRef.current, theme);
+    }
+  };
 
   // Canvas resize handler
   useEffect(() => {
@@ -68,6 +104,10 @@ const WaveformVisualizer: React.FC = () => {
       if (canvas.width !== w || canvas.height !== h) {
         canvas.width = w;
         canvas.height = h;
+        // Assigning width/height clears the canvas. While playing the next
+        // animation frame covers that, but when idle there is no next frame —
+        // repaint here or the scope goes blank on any layout change.
+        paintRef.current();
       }
     };
     resize();
@@ -84,28 +124,26 @@ const WaveformVisualizer: React.FC = () => {
     };
   }, []);
 
-  // Draw loop at display refresh rate — reads from ref, no React state involved
+  // Draw loop at display refresh rate — reads from ref, no React state involved.
+  //
+  // The loop only runs during playback. When idle the canvas is painted once
+  // (empty scope, grid and all) and then left alone, instead of redrawing an
+  // unchanging picture — with shadow blur and three gradients per frame — for
+  // as long as the app is open.
   useEffect(() => {
     let running = true;
 
+    if (!isPlaying) {
+      // Paint once now, then again after the post-stop fetch has settled, so
+      // what's left on screen is the end of the sound rather than a stale frame.
+      paintRef.current();
+      const settled = setTimeout(() => paintRef.current(), FETCH_INTERVAL_MS * 3);
+      return () => clearTimeout(settled);
+    }
+
     const draw = () => {
       if (!running) return;
-
-      const canvas = canvasRef.current;
-      if (canvas) {
-        const ctx = canvas.getContext('2d');
-        if (ctx) {
-          const mode = scopeModeRef.current;
-          if (mode === 'bars') {
-            drawBars(ctx, canvas.width, canvas.height, waveformRef.current, theme);
-          } else if (mode === 'lissajous') {
-            drawLissajous(ctx, canvas.width, canvas.height, waveformRef.current, theme);
-          } else {
-            drawWaveform(ctx, canvas.width, canvas.height, waveformRef.current, theme);
-          }
-        }
-      }
-
+      paintRef.current();
       animationRef.current = requestAnimationFrame(draw);
     };
 
@@ -114,7 +152,7 @@ const WaveformVisualizer: React.FC = () => {
       running = false;
       cancelAnimationFrame(animationRef.current);
     };
-  }, [theme]);
+  }, [theme, isPlaying, scopeMode]);
 
   return (
     <div className="waveform-container">

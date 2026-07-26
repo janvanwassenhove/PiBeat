@@ -4,7 +4,7 @@ import { listen } from "@tauri-apps/api/event";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Toolbar from "./components/Toolbar";
 import BufferTabs from "./components/BufferTabs";
-import CodeEditor from "./components/CodeEditor";
+import CodeEditor from "./components/CodeEditorLazy";
 import TimelineView from "./components/TimelineView";
 import WaveformVisualizer from "./components/WaveformVisualizer";
 import LogPanel from "./components/LogPanel";
@@ -17,6 +17,7 @@ import CuePanel from "./components/CuePanel";
 import UserSamplePanel from "./components/UserSamplePanel";
 import BandControlPanel from "./components/BandControlPanel";
 import { useStore, AppTheme } from "./store";
+import { useShallow } from "zustand/react/shallow";
 import "./App.css";
 
 const THEMES: { id: AppTheme; label: string; colors: [string, string, string] }[] = [
@@ -120,7 +121,41 @@ const AboutModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, on
 };
 
 const App: React.FC = () => {
-  const { fetchSamples, fetchStatus, loadUserSamplesDir, showSampleBrowser, showSynthBrowser, showEffectsPanel, showHelp, showAgentChat, showCuePanel, showUserSamplePanel, showBandVisualizer, detachedPanels, viewMode, theme, setTheme } = useStore();
+  const {
+    fetchSamples,
+    fetchStatus,
+    loadUserSamplesDir,
+    showSampleBrowser,
+    showSynthBrowser,
+    showEffectsPanel,
+    showHelp,
+    showAgentChat,
+    showCuePanel,
+    showUserSamplePanel,
+    showBandVisualizer,
+    detachedPanels,
+    viewMode,
+    theme,
+    setTheme,
+  } = useStore(
+    useShallow((s) => ({
+      fetchSamples: s.fetchSamples,
+      fetchStatus: s.fetchStatus,
+      loadUserSamplesDir: s.loadUserSamplesDir,
+      showSampleBrowser: s.showSampleBrowser,
+      showSynthBrowser: s.showSynthBrowser,
+      showEffectsPanel: s.showEffectsPanel,
+      showHelp: s.showHelp,
+      showAgentChat: s.showAgentChat,
+      showCuePanel: s.showCuePanel,
+      showUserSamplePanel: s.showUserSamplePanel,
+      showBandVisualizer: s.showBandVisualizer,
+      detachedPanels: s.detachedPanels,
+      viewMode: s.viewMode,
+      theme: s.theme,
+      setTheme: s.setTheme,
+    })),
+  );
   const [showAbout, setShowAbout] = useState(false);
 
   useEffect(() => {

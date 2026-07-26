@@ -1,6 +1,7 @@
 import React, { useEffect, useRef } from 'react';
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { FaTimes, FaExternalLinkAlt } from 'react-icons/fa';
 
 interface DetachablePanelProps {
@@ -45,7 +46,15 @@ const DetachablePanel: React.FC<DetachablePanelProps> = ({
   defaultWidth = 340,
   defaultHeight = 520,
 }) => {
-  const { detachedPanels, toggleDetachPanel } = useStore();
+  const {
+    detachedPanels,
+    toggleDetachPanel,
+  } = useStore(
+    useShallow((s) => ({
+      detachedPanels: s.detachedPanels,
+      toggleDetachPanel: s.toggleDetachPanel,
+    })),
+  );
   const inPanelWindow = isPanelWindow();
   const isDetached = !inPanelWindow && !!detachedPanels[panelId];
   const windowRef = useRef<WebviewWindow | null>(null);

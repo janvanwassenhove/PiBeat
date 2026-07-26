@@ -1,10 +1,31 @@
 import React, { useEffect, useState } from 'react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { FaPlay, FaFolder, FaChevronRight, FaChevronDown } from 'react-icons/fa';
 import DetachablePanel from './DetachablePanel';
 
 const SampleBrowser: React.FC = () => {
-  const { samples, fetchSamples, playSampleFile, showSampleBrowser, toggleSampleBrowser, updateBufferCode, buffers, activeBufferId } = useStore();
+  const {
+    samples,
+    fetchSamples,
+    playSampleFile,
+    showSampleBrowser,
+    toggleSampleBrowser,
+    updateBufferCode,
+    buffers,
+    activeBufferId,
+  } = useStore(
+    useShallow((s) => ({
+      samples: s.samples,
+      fetchSamples: s.fetchSamples,
+      playSampleFile: s.playSampleFile,
+      showSampleBrowser: s.showSampleBrowser,
+      toggleSampleBrowser: s.toggleSampleBrowser,
+      updateBufferCode: s.updateBufferCode,
+      buffers: s.buffers,
+      activeBufferId: s.activeBufferId,
+    })),
+  );
   const [filter, setFilter] = useState('');
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
 

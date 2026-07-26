@@ -1,6 +1,7 @@
 import React, { useRef, useEffect } from 'react';
 import Editor, { OnMount } from '@monaco-editor/react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 
 // Register custom language for Sonic Pi syntax
 const SONIC_KEYWORDS = [
@@ -37,7 +38,31 @@ const SAMPLE_NAMES = [
 ];
 
 const CodeEditor: React.FC = () => {
-  const { buffers, activeBufferId, updateBufferCode, theme, isPlaying, activeLines, updateActiveLines, errorLine, setErrorLine, playingBufferId } = useStore();
+  const {
+    buffers,
+    activeBufferId,
+    updateBufferCode,
+    theme,
+    isPlaying,
+    activeLines,
+    updateActiveLines,
+    errorLine,
+    setErrorLine,
+    playingBufferId,
+  } = useStore(
+    useShallow((s) => ({
+      buffers: s.buffers,
+      activeBufferId: s.activeBufferId,
+      updateBufferCode: s.updateBufferCode,
+      theme: s.theme,
+      isPlaying: s.isPlaying,
+      activeLines: s.activeLines,
+      updateActiveLines: s.updateActiveLines,
+      errorLine: s.errorLine,
+      setErrorLine: s.setErrorLine,
+      playingBufferId: s.playingBufferId,
+    })),
+  );
   const activeBuffer = buffers.find(b => b.id === activeBufferId);
   const editorRef = useRef<any>(null);
   const monacoRef = useRef<any>(null);

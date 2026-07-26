@@ -1,9 +1,22 @@
 import React from 'react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import DetachablePanel from './DetachablePanel';
 
 const EffectsPanel: React.FC = () => {
-  const { effects, setEffects, showEffectsPanel, toggleEffectsPanel } = useStore();
+  const {
+    effects,
+    setEffects,
+    showEffectsPanel,
+    toggleEffectsPanel,
+  } = useStore(
+    useShallow((s) => ({
+      effects: s.effects,
+      setEffects: s.setEffects,
+      showEffectsPanel: s.showEffectsPanel,
+      toggleEffectsPanel: s.toggleEffectsPanel,
+    })),
+  );
 
   if (!showEffectsPanel) return null;
 

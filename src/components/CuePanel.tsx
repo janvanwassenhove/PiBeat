@@ -1,10 +1,23 @@
 import React, { useEffect, useRef } from 'react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { FaTrash, FaBullseye, FaPlay } from 'react-icons/fa';
 import DetachablePanel from './DetachablePanel';
 
 const CuePanel: React.FC = () => {
-  const { cueEvents, clearCues, showCuePanel, toggleCuePanel } = useStore();
+  const {
+    cueEvents,
+    clearCues,
+    showCuePanel,
+    toggleCuePanel,
+  } = useStore(
+    useShallow((s) => ({
+      cueEvents: s.cueEvents,
+      clearCues: s.clearCues,
+      showCuePanel: s.showCuePanel,
+      toggleCuePanel: s.toggleCuePanel,
+    })),
+  );
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

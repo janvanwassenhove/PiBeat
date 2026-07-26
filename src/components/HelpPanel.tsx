@@ -1,10 +1,19 @@
 import React from 'react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { FaKeyboard, FaMusic, FaGuitar, FaDrum, FaRedoAlt, FaMagic, FaListOl, FaSlidersH, FaClock } from 'react-icons/fa';
 import DetachablePanel from './DetachablePanel';
 
 const HelpPanel: React.FC = () => {
-  const { showHelp, toggleHelp } = useStore();
+  const {
+    showHelp,
+    toggleHelp,
+  } = useStore(
+    useShallow((s) => ({
+      showHelp: s.showHelp,
+      toggleHelp: s.toggleHelp,
+    })),
+  );
 
   if (!showHelp) return null;
 

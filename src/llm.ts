@@ -8,9 +8,14 @@
  * - Fallback to local pattern-matching when no API key available
  */
 
-import OpenAI from 'openai';
-import Anthropic from '@anthropic-ai/sdk';
-import { GoogleGenAI } from '@google/genai';
+// Type-only imports: the three provider SDKs together are ~400 kB of the
+// startup bundle, and none of them is needed unless the user actually sends a
+// message to that provider. They are pulled in with dynamic import() at first
+// use (see getOpenAIClient and friends below), which keeps them out of the
+// chunk that has to load before the editor can appear.
+import type OpenAI from 'openai';
+import type Anthropic from '@anthropic-ai/sdk';
+import type { GoogleGenAI } from '@google/genai';
 import { invoke } from '@tauri-apps/api/core';
 import { AgentMessage } from './store';
 
@@ -482,22 +487,25 @@ let anthropicClient: Anthropic | null = null;
 let geminiClient: GoogleGenAI | null = null;
 let geminiClientApiKey: string | null = null;
 
-function getOpenAIClient(apiKey: string): OpenAI {
+async function getOpenAIClient(apiKey: string): Promise<OpenAI> {
   if (!openaiClient || openaiClient.apiKey !== apiKey) {
+    const { default: OpenAI } = await import('openai');
     openaiClient = new OpenAI({ apiKey, dangerouslyAllowBrowser: true });
   }
   return openaiClient;
 }
 
-function getAnthropicClient(apiKey: string): Anthropic {
+async function getAnthropicClient(apiKey: string): Promise<Anthropic> {
   if (!anthropicClient || anthropicClient.apiKey !== apiKey) {
+    const { default: Anthropic } = await import('@anthropic-ai/sdk');
     anthropicClient = new Anthropic({ apiKey, dangerouslyAllowBrowser: true });
   }
   return anthropicClient;
 }
 
-function getGeminiClient(apiKey: string): GoogleGenAI {
+async function getGeminiClient(apiKey: string): Promise<GoogleGenAI> {
   if (!geminiClient || geminiClientApiKey !== apiKey) {
+    const { GoogleGenAI } = await import('@google/genai');
     geminiClient = new GoogleGenAI({ apiKey });
     geminiClientApiKey = apiKey;
   }
@@ -880,7 +888,7 @@ async function callOpenAI(
   config: LLMConfig,
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
 ): Promise<LLMResponse> {
-  const client = getOpenAIClient(config.apiKey!);
+  const client = await getOpenAIClient(config.apiKey!);
   
   // GPT-5 models have different API requirements than GPT-4
   const isGPT5 = config.model.startsWith('gpt-5');
@@ -972,7 +980,7 @@ async function callAnthropic(
   config: LLMConfig,
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
 ): Promise<LLMResponse> {
-  const client = getAnthropicClient(config.apiKey!);
+  const client = await getAnthropicClient(config.apiKey!);
 
   // Anthropic expects system message separate from messages array
   const systemMessage = messages.find(m => m.role === 'system')?.content || '';
@@ -1038,7 +1046,7 @@ async function callGemini(
   config: LLMConfig,
   messages: Array<{ role: 'system' | 'user' | 'assistant'; content: string }>
 ): Promise<LLMResponse> {
-  const client = getGeminiClient(config.apiKey!);
+  const client = await getGeminiClient(config.apiKey!);
 
   // Extract system instruction and chat messages
   const systemMessage = messages.find(m => m.role === 'system')?.content || '';

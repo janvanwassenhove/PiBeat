@@ -3,6 +3,7 @@ import { emit, listen } from '@tauri-apps/api/event';
 import { getCurrentWindow } from '@tauri-apps/api/window';
 import { FaCompress } from 'react-icons/fa';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import SampleBrowser from './SampleBrowser';
 import SynthBrowser from './SynthBrowser';
 import EffectsPanel from './EffectsPanel';
@@ -51,7 +52,17 @@ interface PanelHostProps {
  * This component runs in a separate WebviewWindow context.
  */
 const PanelHost: React.FC<PanelHostProps> = ({ panelId }) => {
-  const { fetchSamples, loadUserSamplesDir, theme } = useStore();
+  const {
+    fetchSamples,
+    loadUserSamplesDir,
+    theme,
+  } = useStore(
+    useShallow((s) => ({
+      fetchSamples: s.fetchSamples,
+      loadUserSamplesDir: s.loadUserSamplesDir,
+      theme: s.theme,
+    })),
+  );
 
   // Force the panel's show flag to true and clear detached state
   // so DetachablePanel renders inline instead of trying to open another window

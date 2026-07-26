@@ -1,5 +1,6 @@
 import React, { useState } from 'react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { FaPlay, FaChevronRight, FaChevronDown, FaKeyboard } from 'react-icons/fa';
 import DetachablePanel from './DetachablePanel';
 
@@ -81,7 +82,16 @@ const SynthBrowser: React.FC = () => {
     updateBufferCode,
     buffers,
     activeBufferId,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      showSynthBrowser: s.showSynthBrowser,
+      toggleSynthBrowser: s.toggleSynthBrowser,
+      previewSynth: s.previewSynth,
+      updateBufferCode: s.updateBufferCode,
+      buffers: s.buffers,
+      activeBufferId: s.activeBufferId,
+    })),
+  );
   const [filter, setFilter] = useState('');
   const [collapsedCategories, setCollapsedCategories] = useState<Record<string, boolean>>({});
 
