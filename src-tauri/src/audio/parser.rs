@@ -3621,12 +3621,7 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
                     amplitude,
                     duration,
                     pan,
-                    envelope: Envelope {
-                        attack,
-                        decay,
-                        sustain: sustain_level,
-                        release,
-                    },
+                    envelope: envelope_from_line(line, attack, decay, sustain_level, release),
                     params: extract_synth_params(line),
                 });
             }
@@ -3677,12 +3672,7 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
                 amplitude,
                 duration,
                 pan,
-                envelope: Envelope {
-                    attack,
-                    decay,
-                    sustain: sustain_level,
-                    release,
-                },
+                envelope: envelope_from_line(line, attack, decay, sustain_level, release),
                 params: extract_synth_params(line),
             })
         }
@@ -3724,12 +3714,13 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
             let sustain_level = extract_param(params_str, "sustain_level");
             let release = extract_param(params_str, "release");
             let sample_envelope = if attack.is_some() || release.is_some() || decay.is_some() {
-                Some(Envelope {
-                    attack: attack.unwrap_or(0.0),
-                    decay: decay.unwrap_or(0.0),
-                    sustain: sustain_level.unwrap_or(1.0),
-                    release: release.unwrap_or(0.0),
-                })
+                Some(envelope_from_line(
+                    params_str,
+                    attack.unwrap_or(0.0),
+                    decay.unwrap_or(0.0),
+                    sustain_level.unwrap_or(1.0),
+                    release.unwrap_or(0.0),
+                ))
             } else {
                 None
             };
@@ -3848,12 +3839,7 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
                 amplitude,
                 duration,
                 pan,
-                envelope: Envelope {
-                    attack,
-                    decay,
-                    sustain: sustain_level,
-                    release,
-                },
+                envelope: envelope_from_line(line, attack, decay, sustain_level, release),
                 params: extract_synth_params(line),
             })
         }
@@ -4119,12 +4105,7 @@ fn parse_play_chord(line: &str, ctx: &ParseContext) -> Option<ParsedCommand> {
     // Generate all chord notes as simultaneous PlayNote commands
     let intervals = chord_intervals(chord_type);
     let params = extract_synth_params(line);
-    let envelope = Envelope {
-        attack,
-        decay,
-        sustain: sustain_level,
-        release,
-    };
+    let envelope = envelope_from_line(line, attack, decay, sustain_level, release);
 
     let note_commands: Vec<ParsedCommand> = intervals
         .iter()
@@ -4295,12 +4276,7 @@ fn parse_play_pattern_timed(line: &str, ctx: &ParseContext) -> Option<ParsedComm
                 amplitude,
                 duration: sustain_time,
                 pan: 0.0,
-                envelope: Envelope {
-                    attack,
-                    decay,
-                    sustain: 1.0,
-                    release,
-                },
+                envelope: envelope_from_line(line, attack, decay, 1.0, release),
                 params: synth_params.clone(),
             });
         }
@@ -4519,6 +4495,32 @@ fn extract_note_expression(rest: &str) -> String {
 
 fn extract_param(line: &str, param: &str) -> Option<f32> {
     extract_param_with_context(line, param, None)
+}
+
+/// Build an [`Envelope`] from already-extracted ADSR values plus the three
+/// shaping opts Sonic Pi exposes on every synth: `attack_level:`,
+/// `decay_level:` and `env_curve:`.
+///
+/// Defaults match Sonic Pi's SynthDef arguments — attack_level 1, decay_level
+/// -1 ("follow sustain_level"), env_curve 1 (linear) — so a `play` line that
+/// sets none of them produces exactly the envelope PiBeat produced before
+/// these opts existed.
+fn envelope_from_line(
+    line: &str,
+    attack: f32,
+    decay: f32,
+    sustain_level: f32,
+    release: f32,
+) -> Envelope {
+    Envelope {
+        attack,
+        decay,
+        sustain: sustain_level,
+        release,
+        attack_level: extract_param(line, "attack_level").unwrap_or(1.0),
+        decay_level: extract_param(line, "decay_level").unwrap_or(-1.0),
+        curve: extract_param(line, "env_curve").unwrap_or(1.0),
+    }
 }
 
 /// Read the first positional numeric argument from an argument list, e.g.
@@ -4931,6 +4933,12 @@ fn extract_synth_params(line: &str) -> Vec<(String, f32)> {
         "mod_wave",
         "mod_invert_wave",
         "vel",
+        // Envelope shaping opts. The SC SynthDefs declare these, and unknown
+        // params are forwarded verbatim on /s_new, so listing them here is all
+        // it takes for the SuperCollider engine to honour them.
+        "attack_level",
+        "decay_level",
+        "env_curve",
     ];
     for name in &synth_param_names {
         if let Some(val) = extract_param(line, name) {
@@ -5121,6 +5129,8 @@ fn commands_to_audio_ctx(
                         decay: envelope.decay * beat_duration,
                         sustain: envelope.sustain, // sustain is a level (0-1), not a time
                         release: envelope.release * beat_duration,
+                        // Levels and curve shape are unitless — carry them over
+                        ..*envelope
                     };
                     result.push((
                         time_offset,
@@ -5157,6 +5167,7 @@ fn commands_to_audio_ctx(
                     decay: env.decay * beat_duration,
                     sustain: env.sustain,
                     release: env.release * beat_duration,
+                    ..*env
                 });
                 // If sample has lpf: or hpf: params, wrap with FxStart/FxEnd
                 // so the per-voice FX system applies the filter
@@ -5447,6 +5458,7 @@ fn commands_to_audio_ctx(
                                 decay: env.decay * beat_duration,
                                 sustain: env.sustain,
                                 release: env.release * beat_duration,
+                                ..*env
                             })
                         } else {
                             None

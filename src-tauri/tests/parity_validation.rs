@@ -3566,3 +3566,104 @@ end";
         );
     }
 }
+
+// ============================================================================
+// SECTION: envelope shaping opts (attack_level / decay_level / env_curve)
+//
+// Sonic Pi's synths build a four-segment envelope
+// (0 -> attack_level -> decay_level -> sustain_level -> 0) whose segment shape
+// is chosen by env_curve. Defaults are attack_level 1, decay_level -1 ("same
+// as sustain_level") and env_curve 1 (linear).
+// ============================================================================
+
+fn first_envelope(evts: &[(f32, AudioCommand)]) -> sonic_daw_lib::audio::synth::Envelope {
+    for (_, cmd) in evts {
+        if let AudioCommand::PlayNote { envelope, .. } = cmd {
+            return *envelope;
+        }
+    }
+    panic!("expected a PlayNote event");
+}
+
+#[test]
+fn parity_envelope_defaults_match_sonic_pi() {
+    let env = first_envelope(&events("play :c4", DEFAULT_BPM));
+    assert_eq!(env.attack_level, 1.0, "attack_level should default to 1");
+    assert_eq!(
+        env.decay_level, -1.0,
+        "decay_level should default to Sonic Pi's -1 sentinel"
+    );
+    assert_eq!(env.curve, 1.0, "env_curve should default to 1 (linear)");
+    assert_eq!(
+        env.effective_decay_level(),
+        env.sustain,
+        "an unset decay_level follows sustain_level"
+    );
+}
+
+#[test]
+fn parity_envelope_opts_are_parsed() {
+    let env = first_envelope(&events(
+        "play :c4, attack: 0.1, attack_level: 0.8, decay: 0.2, decay_level: 0.3, sustain_level: 0.5, env_curve: 3",
+        DEFAULT_BPM,
+    ));
+    assert!((env.attack_level - 0.8).abs() < 1e-5);
+    assert!((env.decay_level - 0.3).abs() < 1e-5);
+    assert!((env.curve - 3.0).abs() < 1e-5);
+    assert!((env.effective_decay_level() - 0.3).abs() < 1e-5);
+}
+
+#[test]
+fn parity_envelope_opts_reach_supercollider_as_synth_params() {
+    // The SC engine forwards every entry in `params` verbatim on /s_new, and
+    // the SynthDefs declare these three, so appearing here is what makes them
+    // take effect on the SuperCollider backend.
+    let evts = events(
+        "play :c4, attack_level: 0.7, decay_level: 0.4, env_curve: 2",
+        DEFAULT_BPM,
+    );
+    let params = evts
+        .iter()
+        .find_map(|(_, c)| match c {
+            AudioCommand::PlayNote { params, .. } => Some(params.clone()),
+            _ => None,
+        })
+        .expect("expected a PlayNote event");
+    let lookup = |name: &str| params.iter().find(|(k, _)| k == name).map(|(_, v)| *v);
+    assert_eq!(lookup("attack_level"), Some(0.7));
+    assert_eq!(lookup("decay_level"), Some(0.4));
+    assert_eq!(lookup("env_curve"), Some(2.0));
+}
+
+#[test]
+fn parity_env_segment_shapes() {
+    use sonic_daw_lib::audio::synth::env_segment;
+
+    // Linear is the default and must stay exactly linear.
+    assert!((env_segment(0.0, 1.0, 0.5, 1.0) - 0.5).abs() < 1e-6);
+    // Step jumps immediately to the target.
+    assert!((env_segment(0.0, 1.0, 0.01, 0.0) - 1.0).abs() < 1e-6);
+    // Sine eases: still 0.5 at the midpoint but slower at the edges.
+    assert!((env_segment(0.0, 1.0, 0.5, 3.0) - 0.5).abs() < 1e-6);
+    assert!(env_segment(0.0, 1.0, 0.25, 3.0) < 0.25);
+    // Squared starts slow.
+    assert!(env_segment(0.0, 1.0, 0.5, 6.0) < 0.5);
+    // Every shape must hit both endpoints exactly.
+    for curve in [0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 7.0] {
+        let end = env_segment(0.2, 0.9, 1.0, curve);
+        assert!(
+            (end - 0.9).abs() < 1e-3,
+            "curve {curve} should reach the target level, got {end}"
+        );
+        if curve != 0.0 {
+            let start = env_segment(0.2, 0.9, 0.0, curve);
+            assert!(
+                (start - 0.2).abs() < 1e-3,
+                "curve {curve} should start at the source level, got {start}"
+            );
+        }
+    }
+    // Exponential through zero must stay finite rather than producing NaN.
+    let v = env_segment(0.0, 1.0, 0.5, 2.0);
+    assert!(v.is_finite(), "exponential segment from 0 should be finite");
+}

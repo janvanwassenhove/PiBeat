@@ -314,8 +314,11 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
     // This invalidates all old scheduled threads from previous buffers
     let current_session = state.session_id.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
 
-    // Build line intervals for highlighting
-    let line_intervals = build_line_intervals(&code, effective_bpm);
+    // Build line intervals for highlighting. Sorted by start time so
+    // get_active_lines — which runs on a 50ms poll for the whole of playback —
+    // can stop scanning at the first interval that has not begun yet.
+    let mut line_intervals = build_line_intervals(&code, effective_bpm);
+    line_intervals.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
     // Compute max highlight end time so scheduler threads know how long to keep
     // playback_start alive (intervals must remain queryable until they expire).
     let max_highlight_end = line_intervals
@@ -2431,21 +2434,35 @@ fn get_active_lines(state: tauri::State<Arc<AppState>>) -> Vec<usize> {
         return vec![];
     };
 
-    let elapsed = start_instant.elapsed().as_secs_f32();
+    // `playback_start` is the audible epoch, so before the first note sounds
+    // `elapsed` is legitimately negative and nothing is highlighted yet.
+    let now = Instant::now();
+    if now < start_instant {
+        return vec![];
+    }
+    let elapsed = now.duration_since(start_instant).as_secs_f32();
     let intervals = state.active_line_intervals.lock();
 
-    // Find all lines that are active at the current time
-    // An interval is active if elapsed is between start and end
+    // Find all lines active at the current time. Deduplicating with a bitmap
+    // over line numbers rather than `Vec::contains` keeps this linear — this
+    // runs on a 50ms poll for the whole of playback, and a long piece can have
+    // thousands of intervals.
     let mut active = Vec::new();
+    let mut seen = vec![false; 64];
     for interval in intervals.iter() {
-        if elapsed >= interval.start && elapsed <= interval.end {
-            if !active.contains(&interval.line) {
+        // Intervals are emitted in start order, so once we are looking at one
+        // that starts in the future, nothing later can be active.
+        if interval.start > elapsed {
+            break;
+        }
+        if elapsed <= interval.end {
+            if interval.line >= seen.len() {
+                seen.resize(interval.line + 1, false);
+            }
+            if !seen[interval.line] {
+                seen[interval.line] = true;
                 active.push(interval.line);
             }
-        }
-        // Early exit if we've passed all possible intervals
-        if interval.start > elapsed + 1.0 {
-            break;
         }
     }
 
@@ -2692,6 +2709,7 @@ fn preview_synth(synth_name: String, state: tauri::State<Arc<AppState>>) -> Resu
         decay: 0.1,
         sustain: 0.6,
         release: 0.2,
+        ..Envelope::default()
     };
 
     // Always use the built-in cpal engine for preview.
@@ -4043,6 +4061,9 @@ fn preload_samples_sc(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Per-event tracing is off unless PIBEAT_TRACE is set — see src/trace.rs.
+    trace::init_from_env();
+
     // Create recorder first (we'll get sample rate from it)
     let recorder = Recorder::new(44100); // Default, will be updated
 

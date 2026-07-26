@@ -553,6 +553,14 @@ impl Default for VisualEngineConfig {
 /// 256 is enough for ~8 seconds of dense musical activity at 30fps consumption.
 const EVENT_BRIDGE_CAPACITY: usize = 256;
 
+/// Tick interval used when nothing is playing and every director has settled.
+///
+/// The visual engine has no idea whether the band panel is open, so it used to
+/// rebuild a byte-identical snapshot at the full target frame rate for the
+/// entire time the app sat idle. 10Hz still notices a new event within a frame
+/// of it arriving, at a fraction of the cost.
+const IDLE_FRAME_INTERVAL: Duration = Duration::from_millis(100);
+
 /// Non-blocking, bounded event bridge from the scheduler to the visual engine.
 ///
 /// # Safety contract
@@ -1195,6 +1203,22 @@ impl VisualEngine {
                 // Drain events to prevent channel saturation, but don't process
                 while rx.try_recv().is_ok() {}
                 std::thread::sleep(Duration::from_millis(100));
+                continue;
+            }
+
+            // Idle throttle. Between runs there is nothing to animate: no
+            // events arrive, every director has already decayed to rest, and
+            // rebuilding an identical snapshot 60 times a second just keeps a
+            // core warm for a panel the user may not even have open. Drop to a
+            // slow tick until either an event shows up or playback resumes.
+            //
+            // The very first idle frames still run at full rate so the decay
+            // to rest is smooth rather than stepped.
+            if !is_playing && rx.is_empty() && band_director.global_energy < 0.001 {
+                std::thread::sleep(IDLE_FRAME_INTERVAL);
+                // Keep `last_frame` honest so the frame after this does not
+                // see a huge dt and jump every animation forward.
+                last_frame = Instant::now();
                 continue;
             }
 

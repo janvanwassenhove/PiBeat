@@ -55,12 +55,44 @@ pub enum OscillatorType {
     GabberKick,
 }
 
+/// Sonic Pi's four-segment amplitude envelope.
+///
+/// The shape is `0 -> attack_level -> decay_level -> sustain -> 0` over
+/// `attack`, `decay`, hold, `release`. It mirrors the `shapedAdsr` envelope
+/// array Sonic Pi builds in its SynthDefs, so the built-in engine and the
+/// SuperCollider engine describe the same curve.
+///
+/// Times are in seconds by the point they reach the engine; the parser
+/// converts from beats.
 #[derive(Debug, Clone, Copy, PartialEq, serde::Deserialize, serde::Serialize)]
 pub struct Envelope {
     pub attack: f32,
     pub decay: f32,
+    /// Sustain *level* (0..1), not a duration. Named for the Sonic Pi opt
+    /// `sustain_level:`; the hold time travels separately as the note duration.
     pub sustain: f32,
     pub release: f32,
+    /// Level reached at the end of the attack segment (Sonic Pi default 1).
+    #[serde(default = "default_attack_level")]
+    pub attack_level: f32,
+    /// Level reached at the end of the decay segment. Sonic Pi's sentinel `-1`
+    /// means "same as sustain_level", which is the default.
+    #[serde(default = "default_decay_level")]
+    pub decay_level: f32,
+    /// Segment shape, using Sonic Pi's `env_curve:` numbering:
+    /// 1=linear (default), 2=exponential, 3=sine, 4=welch, 6=squared, 7=cubed.
+    #[serde(default = "default_env_curve")]
+    pub curve: f32,
+}
+
+fn default_attack_level() -> f32 {
+    1.0
+}
+fn default_decay_level() -> f32 {
+    -1.0
+}
+fn default_env_curve() -> f32 {
+    1.0
 }
 
 impl Default for Envelope {
@@ -70,7 +102,79 @@ impl Default for Envelope {
             decay: 0.0,
             sustain: 1.0,
             release: 1.0,
+            attack_level: default_attack_level(),
+            decay_level: default_decay_level(),
+            curve: default_env_curve(),
         }
+    }
+}
+
+impl Envelope {
+    /// Resolve Sonic Pi's `-1` sentinel: an unset `decay_level` follows
+    /// `sustain_level`.
+    #[inline]
+    pub fn effective_decay_level(&self) -> f32 {
+        if self.decay_level < 0.0 {
+            self.sustain
+        } else {
+            self.decay_level
+        }
+    }
+}
+
+/// Interpolate between two envelope levels using a Sonic Pi `env_curve` shape.
+///
+/// Matches scsynth's `EnvGen` segment shapes so a patch sounds the same on
+/// either engine. `pos` is the normalised position within the segment (0..1).
+pub fn env_segment(from: f32, to: f32, pos: f32, curve: f32) -> f32 {
+    let p = pos.clamp(0.0, 1.0);
+    // Shape numbers are integers in practice; round so 1.0000001 still reads
+    // as linear.
+    match curve.round() as i32 {
+        // step: jump to the target level immediately
+        0 => to,
+        // exponential — undefined through zero, so nudge an endpoint off it
+        // rather than returning a silent or NaN segment
+        2 => {
+            const EPS: f32 = 1e-4;
+            let a = if from.abs() < EPS {
+                EPS.copysign(if from < 0.0 { -1.0 } else { 1.0 })
+            } else {
+                from
+            };
+            let b = if to.abs() < EPS {
+                EPS.copysign(if to < 0.0 { -1.0 } else { 1.0 })
+            } else {
+                to
+            };
+            a * (b / a).powf(p)
+        }
+        // sine: ease in and out
+        3 => from + (to - from) * (-(std::f32::consts::PI * p).cos() * 0.5 + 0.5),
+        // welch: quarter sine, direction depends on whether we rise or fall
+        4 => {
+            if from < to {
+                from + (to - from) * (std::f32::consts::FRAC_PI_2 * p).sin()
+            } else {
+                to + (from - to) * (std::f32::consts::FRAC_PI_2 * (1.0 - p)).sin()
+            }
+        }
+        // squared
+        6 => {
+            let a = from.max(0.0).sqrt();
+            let b = to.max(0.0).sqrt();
+            let v = a + (b - a) * p;
+            v * v
+        }
+        // cubed
+        7 => {
+            let a = from.max(0.0).cbrt();
+            let b = to.max(0.0).cbrt();
+            let v = a + (b - a) * p;
+            v * v * v
+        }
+        // 1 (linear) and anything unrecognised
+        _ => from + (to - from) * p,
     }
 }
 
@@ -363,28 +467,32 @@ impl SynthVoice {
         sample * self.amplitude
     }
 
+    /// Amplitude of Sonic Pi's four-segment envelope at a point in the note.
+    ///
+    /// Segments run `0 -> attack_level -> decay_level -> sustain_level -> 0`,
+    /// each shaped by `env_curve` (default 1, linear — Sonic Pi's default too).
     pub fn envelope_value(&self, samples_elapsed: u64, total_samples: u64) -> f32 {
+        let env = &self.envelope;
         let t = samples_elapsed as f32 / self.sample_rate;
         let total_t = total_samples as f32 / self.sample_rate;
         // Ensure minimum release of 1ms to avoid clicks (matches Sonic Pi behavior)
-        let effective_release = self.envelope.release.max(0.001);
+        let effective_release = env.release.max(0.001);
         let release_start = (total_t - effective_release).max(0.0);
+        let decay_level = env.effective_decay_level();
 
-        if self.envelope.attack > 0.0 && t < self.envelope.attack {
-            // Attack: linear ramp 0 → 1
-            t / self.envelope.attack
-        } else if self.envelope.decay > 0.0 && t < self.envelope.attack + self.envelope.decay {
-            // Decay: linear ramp 1 → sustain_level
-            let decay_t = (t - self.envelope.attack) / self.envelope.decay;
-            1.0 - (1.0 - self.envelope.sustain) * decay_t
+        if env.attack > 0.0 && t < env.attack {
+            env_segment(0.0, env.attack_level, t / env.attack, env.curve)
+        } else if env.decay > 0.0 && t < env.attack + env.decay {
+            let pos = (t - env.attack) / env.decay;
+            env_segment(env.attack_level, decay_level, pos, env.curve)
         } else if t < release_start {
-            // Sustain: hold at sustain level
-            self.envelope.sustain
+            // Sustain segment: holds at sustain_level. Sonic Pi's third
+            // segment travels decay_level -> sustain_level, which is a flat
+            // hold unless decay_level was set explicitly.
+            env.sustain
         } else {
-            // Release: linear ramp sustain_level → 0
-            // Sonic Pi uses \lin curves by default for all envelope segments
-            let release_t = ((t - release_start) / effective_release).clamp(0.0, 1.0);
-            self.envelope.sustain * (1.0 - release_t)
+            let pos = ((t - release_start) / effective_release).clamp(0.0, 1.0);
+            env_segment(env.sustain, 0.0, pos, env.curve)
         }
     }
 
@@ -1211,10 +1319,8 @@ mod tests {
         let sr = 44100.0;
         let total_samples = (sr * 0.5) as u64; // 0.5 seconds
         let env = Envelope {
-            attack: 0.0,
-            decay: 0.0,
-            sustain: 1.0,
             release: 0.5, // 0.5s release (the whole note is release)
+            ..Envelope::default()
         };
         let mut voice = SynthVoice::new(
             OscillatorType::SuperSaw,
@@ -1271,10 +1377,8 @@ mod tests {
     #[test]
     fn envelope_linear_release() {
         let env = Envelope {
-            attack: 0.0,
-            decay: 0.0,
-            sustain: 1.0,
             release: 0.5,
+            ..Envelope::default()
         };
         let sr = 44100.0;
         let total_samples = (sr * 0.5) as u64;
