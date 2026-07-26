@@ -66,15 +66,39 @@ in_thread do
 end
 ```
 
-## Remaining Limitations
-
-### Synchronization (`cue`, `sync:`)
+### Synchronization (`cue`, `sync`) ✅
 ```ruby
-# ⚠️ PARSED BUT IGNORED:
-# cue/sync are recognized but treated as no-ops
-cue :beat_bar
-live_loop :kick, sync: :beat_bar do
+# ✅ NOW SUPPORTED:
+live_loop :metro do
+  cue :bar
+  sleep 4
+end
+
+live_loop :kick, sync: :bar do   # first iteration waits for the cue
+  sample :bd_haus
+  sleep 1
+end
+
+in_thread do
+  sync :bar                      # blocks until the next :bar cue
+  play :c4
+end
 ```
+`sync` waits for the *next* matching `cue`, as in Sonic Pi — a cue that has
+already fired cannot be synced to. `live_loop … sync:` gates only the first
+iteration; the loop free-runs after that.
+
+Two caveats, both consequences of PiBeat expanding the whole piece before
+playing it rather than running threads live:
+
+- Cue times are resolved statically, over the expanded timeline. A cue whose
+  time depends on a runtime random value can therefore land on the wrong
+  iteration. Ordinary metronome/follower arrangements resolve correctly.
+- A `sync` with no matching `cue` anywhere in the program continues immediately
+  instead of blocking forever. Sonic Pi would hang; silently dropping the rest
+  of someone's music seemed the worse option.
+
+## Remaining Limitations
 
 ### `control` (runtime synth modification)
 ```ruby
@@ -83,6 +107,10 @@ s = play :c4, sustain: 10
 control s, cutoff: 80
 # control is recognized but does not modify a running synth
 ```
+Supporting this needs the parser to model synth handles — `play` returning
+something a variable can hold, and `control` resolving it back to a live node.
+The parser has no concept of a value returned by `play` today, so this is a
+structural change rather than a missing command.
 
 ### MIDI Commands
 ```ruby
@@ -115,13 +143,19 @@ time_warp 0.5 do
 end
 ```
 
-### `with_swing`
+### `with_swing` ✅
 ```ruby
-# ⚠️ NOT SUPPORTED:
-with_swing 0.1 do
-  # ...
+# ✅ NOW SUPPORTED:
+live_loop :beat do
+  with_swing 0.1, pulse: 4 do
+    sample :elec_beep   # late on the 1st beat of every 4, straight otherwise
+  end
+  sleep 0.25
 end
 ```
+One run in every `pulse` (default 4) is time-warped by `shift` beats (default
+0.1), exactly as Sonic Pi does it. `tick:` names the counter so two swing blocks
+in one loop do not interfere; `offset:` shifts which run is the swung one.
 
 ## What IS Supported
 
