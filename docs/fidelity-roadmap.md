@@ -39,8 +39,8 @@ Ensure the parser and event-stream output match Sonic Pi behavior for the suppor
 ## Phase 3: Audio Engine Parity ✅
 | Feature | Status | Notes |
 |---------|--------|-------|
-| OSC bundle timestamps | ⬜ Todo | SC events use /s_new, no bundle timestamps |
-| SynthDef envelope curves | ⬜ Todo | All `\lin` → should be exponential for release |
+| OSC bundle timestamps | ✅ Done | Events sent as timestamped bundles 0.5s ahead; scsynth places them sample-accurately |
+| SynthDef envelope curves | ✅ Done | Sonic Pi's default is linear (`env_curve = 1` in beep.scd); `env_curve`/`attack_level`/`decay_level` are now runtime params |
 | `with_fx` on cpal engine | ✅ Done | Per-voice VoiceFx chain (33 FX types) |
 | `with_synth` block scoping | ✅ Done | Saves/restores current_synth |
 | `use_synth_defaults` | ✅ Done | `parse_defaults_line()` + `ctx.synth_defaults` |
@@ -53,20 +53,20 @@ Ensure the parser and event-stream output match Sonic Pi behavior for the suppor
 ## Phase 4: Advanced Sonic Pi Features
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `cue`/`sync` semantics | ⬜ Todo | Recognized but no-ops (warning logged) |
+| `cue`/`sync` semantics | ✅ Done | Resolved over the expanded timeline; `sync` waits for the next matching `cue` |
 | `at` blocks | ✅ Done | Implemented |
 | `choose()` for arrays | ✅ Done | Random selection works |
 | Ring `.tick`/`.look` cycling | ✅ Done | Deterministic counter-based, LCM for multi-ring |
 | `use_bpm_mul` | ✅ Done | Multiplies current BPM |
 | `with_bpm_mul N do...end` | ✅ Done | Scoped BPM multiplication with save/restore |
-| `with_swing N do...end` | ⚠️ Partial | Block contents execute; swing timing not applied |
+| `with_swing N do...end` | ✅ Done | One run in every `pulse` time-warped by `shift`, per `tick:` key |
 | Multiple octave notation | ⬜ Todo | e.g., `:c` without octave |
-| `control` command | ⬜ Todo | Recognized but no-op (warning logged) |
+| `control` command | ⬜ Todo | Needs synth handles in the parser (`s = play 60` … `control s, …`) |
 | `Time.now` access | ❌ N/A | Ruby runtime feature, not supportable |
 | `def method(args)` | ✅ Done | Ruby-style methods work |
 | `.each do \|x\|` | ✅ Done | Array iteration works |
-| `sync:` on live_loop | ⬜ Todo | Recognized but ignored (warning logged) |
-| Per-sample ADSR | ⬜ Todo | `attack:/decay:/release:` on samples |
+| `sync:` on live_loop | ✅ Done | First iteration starts at the first matching cue |
+| Per-sample ADSR | ✅ Done | `attack:/decay:/sustain_level:/release:` on samples |
 
 ## Phase 5: Audio Comparison Pipeline
 | Component | Status | Notes |
@@ -79,8 +79,20 @@ Ensure the parser and event-stream output match Sonic Pi behavior for the suppor
 | Candidate WAV generation | ⬜ Todo | Automate cpal offline render |
 | CI integration | ⬜ Todo | Run fidelity suite in CI |
 
+## Phase 6: Master Output Parity ✅
+Sonic Pi never routes a synth straight to the sound card. Matching its master
+stage turned out to matter more for perceived similarity than any individual
+synth.
+
+| Component | Status | Notes |
+|-----------|--------|-------|
+| Master limiter chain | ✅ Done | `sonic_mixer`: DC block → `Limiter(0.99, 0.01)` → `clip2` → 10 Hz / 20.5 kHz safety filters |
+| NaN/Inf sanitisation | ✅ Done | `CheckBadValues` + `Select` stands in for Sonic Pi's `Sanitize` UGen |
+| Pre-limiter scope tap | ❌ N/A | Needs `ScopeOut2` from Sonic Pi's UGen plugins; PiBeat's scope reads the post-mixer bus |
+| cpal master chain | ⬜ Todo | The built-in engine still sums straight to the device |
+
 ## Definition of Done
-- [x] `cargo test` all green (334+ tests)
+- [x] `cargo test` all green (353 tests, all runnable from a clean clone)
 - [x] Fidelity test fixtures exist for all supported features
 - [x] Event-stream snapshot tests verify parser output
 - [x] Audio comparison harness exists and self-tests pass

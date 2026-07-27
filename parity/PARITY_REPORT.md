@@ -2,7 +2,14 @@
 
 ## Summary
 
-This report documents the parser's compatibility with Sonic Pi syntax and identifies gaps between PiBeat's implementation and Sonic Pi's behavior.
+This report documents PiBeat's compatibility with Sonic Pi — both what the
+parser accepts and what the audio engine does with it — and records the gaps
+that remain.
+
+Recent parity work closed four audible differences: the missing master limiter
+chain, wall-clock (jittery) note dispatch on the SuperCollider path, `cue`/`sync`
+being no-ops, and `with_swing` running at straight timing. See *Master Output
+Parity*, *Note Timing*, and *How `sync/cue` Works Without Threads* below.
 
 ## Test Results (Example Files)
 
@@ -88,7 +95,7 @@ This report documents the parser's compatibility with Sonic Pi syntax and identi
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `sync/cue` | ⚠️ Parsed, Logged | Commands are recognized, logged; do not block/synchronize |
+| `sync/cue` | ✅ Implemented | `sync` waits for the next matching `cue`; see the caveats under Design Decisions |
 | `stop` inside live_loop | ⚠️ Partial | May not properly terminate loop |
 | Single-line `if` with `next` | ⚠️ Limited | `if cond; action; next; end` on one line |
 
@@ -96,7 +103,7 @@ This report documents the parser's compatibility with Sonic Pi syntax and identi
 
 | Feature | Status | Notes |
 |---------|--------|-------|
-| `sync: :bar` on live_loop | ⚠️ Parsed | Parameter stored, logged; starts immediately |
+| `sync: :bar` on live_loop | ✅ Implemented | First iteration starts at the first matching cue |
 | `get(:var)` returns complex expression | ⚠️ Partial | If var holds unevaluated expression string, arithmetic fails |
 | `control` command | ⚠️ Parsed, No-op | See Design Decisions below |
 
@@ -118,20 +125,30 @@ This report documents the parser's compatibility with Sonic Pi syntax and identi
 
 ## Test Coverage
 
-### Parser Tests (48 tests)
-- All passing ✅
-- Includes: `test_amp_mod_user_function_in_params`, `test_set_with_loop_variable_arithmetic`
+353 tests, all passing, all runnable from a clean clone (`cargo test` in
+`src-tauri/`). Previously the integration suites could not even compile outside
+the author's working tree: `fidelity/fixtures/` was gitignored while
+`disco_groove_test.rs` pulled a fixture in with `include_str!`.
 
-### Parity Validation Tests (169 tests)
-- All passing ✅
-- Covers: synths, FX, samples, timing, envelopes, conditionals, ADSR, at/time_warp, variables, define, loops
+### Library unit tests (55)
+- Parser, synth, visualizer internals, and static checks on the generated
+  SuperCollider SynthDef script
 
-### Example File Tests (13 tests)
-- All passing ✅
-- Test1-Test5 parse without errors
+### Parity validation tests (204)
+- Synths, FX, samples, timing, envelopes, conditionals, ADSR, at/time_warp,
+  variables, define, loops, cue/sync, with_swing, envelope shaping opts
 
-### Fidelity Snapshot Tests (57 tests)
-- All passing ✅
+### Fidelity snapshot tests (72)
+- Event-stream snapshots for every supported construct
+
+### Example file tests (13)
+- Test1–Test5 parse without errors. `Test5` and `DiscoTest` are untracked local
+  scratch files; the tests that read them skip when they are absent rather than
+  failing a clean clone.
+
+### Audio comparison + fixture tests (9)
+- RMS / spectral / onset / silence metric harness self-tests, and the
+  `disco_groove` full-composition fixture
 
 ## Design Decisions
 
@@ -157,30 +174,53 @@ sleep 1
 play :e4, sustain: 9
 ```
 
-### Why `sync/cue` Doesn't Block
+### How `sync/cue` Works Without Threads
 
-Similar to `control`, Sonic Pi's `sync/cue` provides real-time thread coordination. In our pre-computed model:
+Sonic Pi's `sync`/`cue` is real-time coordination between running threads.
+PiBeat computes the whole timeline before playing a note, so there is nothing to
+block. The same result is reached statically instead:
 
-- All `live_loop` timelines are computed before playback
-- `sync` cannot block waiting for a `cue` since both are evaluated at parse time
-- Loops start immediately rather than waiting for sync signals
+1. One expansion pass records the absolute time of every `cue`, treating `sync`
+   as a no-op.
+2. Later passes resolve each `sync` to the next matching cue time and move the
+   waiting code there.
+3. Resolving a sync moves events, which can move the cues *those* events emit,
+   so the passes repeat until the cue map stops changing (capped at three
+   rounds — a metronome cueing several followers settles after one).
 
-**Workaround:** Use explicit `sleep` timing to coordinate loops:
+Programs with no cues skip all of this and take the original single-pass path,
+so nothing pays for a feature it does not use.
 
-```ruby
-# Instead of:
-live_loop :drums, sync: :go do ... end
-cue :go
+Two behaviours differ from Sonic Pi, both traceable to the static model:
 
-# Use:
-live_loop :drums do
-  sleep 4  # Wait 4 beats before starting
-  ...
-end
-```
+- A cue whose time depends on a runtime random value can be matched against the
+  wrong iteration, because the cue map is fixed before playback.
+- A `sync` with no matching `cue` anywhere in the program continues immediately.
+  Sonic Pi hangs; dropping the rest of the piece silently seemed worse.
 
-## Files Modified This Session
+## Master Output Parity
 
-- `src-tauri/src/audio/parser.rs`: Added `time_warp` block support, `sync_with` field for loops
-- `src-tauri/src/audio/engine.rs`: Added `start:`, `finish:` sample trimming with fade-out
-- `src-tauri/src/lib.rs`: Added `beat_stretch` rate calculation using sample duration
+Sonic Pi never sends a synth straight to the sound card — everything passes
+through `sonic-pi-mixer`, which DC-blocks, limits at 0.99, hard-clips, and
+applies fixed 10 Hz / 20.5 kHz safety filters. PiBeat wrote synths directly to
+hardware bus 0, so dense material that Sonic Pi would ride into its limiter
+instead clipped against the converter. `sonic_mixer` now reproduces that chain
+at the head of the monitor group on the SuperCollider path.
+
+Two deliberate deviations, both because Sonic Pi's own UGen plugins are not
+available:
+
+- `Sanitize` (NaN/Inf → silence) is emulated with `CheckBadValues` + `Select`.
+- `ScopeOut2`, the pre-limiter scope tap, is dropped; PiBeat's scope reads the
+  post-mixer bus instead.
+
+The built-in cpal engine still sums straight to the device — see Known Gaps.
+
+## Note Timing
+
+Sonic Pi stamps each OSC message with a timetag `sched_ahead_time` (0.5s) into
+the future and hands it to scsynth early, so the server starts each synth on the
+exact sample regardless of when the language-side thread woke up. PiBeat used to
+fire `/s_new` at wall-clock time from a Rust thread, which made note placement
+track OS scheduling jitter. It now sends timestamped bundles the same way, and
+`/clearSched` on stop so queued events do not outlive the stop button.

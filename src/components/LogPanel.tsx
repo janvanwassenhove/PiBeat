@@ -1,5 +1,6 @@
 import React, { useEffect, useRef, useCallback } from 'react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { FaTrash, FaArrowDown } from 'react-icons/fa';
 
 /** Extract a line number from log messages like "Line 5: ..." or "Parse error: line 3" */
@@ -16,7 +17,17 @@ function extractLineNumber(message: string): number | null {
 }
 
 const LogPanel: React.FC = () => {
-  const { logs, clearLogs, setErrorLine } = useStore();
+  const {
+    logs,
+    clearLogs,
+    setErrorLine,
+  } = useStore(
+    useShallow((s) => ({
+      logs: s.logs,
+      clearLogs: s.clearLogs,
+      setErrorLine: s.setErrorLine,
+    })),
+  );
   const containerRef = useRef<HTMLDivElement>(null);
 
   useEffect(() => {

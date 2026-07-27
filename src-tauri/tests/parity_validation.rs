@@ -891,6 +891,19 @@ fn read_example(name: &str) -> String {
         .unwrap_or_else(|e| panic!("Failed to read {}: {}", path, e))
 }
 
+/// Read an example that may not be tracked in git (local scratch file).
+/// Tests using this skip rather than fail when the file is absent.
+fn try_read_example(name: &str) -> Option<String> {
+    let path = format!("../examples/{}", name);
+    match std::fs::read_to_string(&path) {
+        Ok(code) => Some(code),
+        Err(_) => {
+            eprintln!("{} not present, skipping", path);
+            None
+        }
+    }
+}
+
 #[test]
 fn parity_test1_deep() {
     let code = read_example("Test1");
@@ -976,7 +989,7 @@ fn parity_test4_deep() {
 
 #[test]
 fn parity_test5_deep() {
-    let code = read_example("Test5");
+    let Some(code) = try_read_example("Test5") else { return };
     // Test5 may have mismatched do/end blocks — use try_events
     let result = try_events(&code, 80.0); // Test5 uses use_bpm 80
     match result {
@@ -3302,4 +3315,355 @@ fn parity_all_new_fx_produce_notes() {
             "FX '{}' should still produce PlayNote events", fx
         );
     }
+}
+
+// ============================================================================
+// SECTION: cue / sync coordination
+//
+// Sonic Pi's `sync` blocks the calling thread until another thread broadcasts
+// a matching `cue`, and resets the waiting thread's clock to the cue's time.
+// PiBeat expands the whole piece up front, so it resolves this statically: one
+// pass records when every cue fires, later passes make each `sync` jump to the
+// next matching cue time.
+// ============================================================================
+
+/// Time of the first note event in the stream.
+fn first_note_time(evts: &[(f32, AudioCommand)]) -> Option<f32> {
+    evts.iter()
+        .filter(|(_, c)| matches!(c, AudioCommand::PlayNote { .. }))
+        .map(|(t, _)| *t)
+        .fold(None, |acc: Option<f32>, t| {
+            Some(acc.map_or(t, |a| a.min(t)))
+        })
+}
+
+/// All note times, sorted.
+fn note_times(evts: &[(f32, AudioCommand)]) -> Vec<f32> {
+    let mut ts: Vec<f32> = evts
+        .iter()
+        .filter(|(_, c)| matches!(c, AudioCommand::PlayNote { .. }))
+        .map(|(t, _)| *t)
+        .collect();
+    ts.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    ts
+}
+
+#[test]
+fn parity_sync_waits_for_cue() {
+    // The cueing thread sleeps 2 beats before cueing, so at 60 BPM the synced
+    // note must land at 2s, not at 0s.
+    let code = "\
+in_thread do
+  sleep 2
+  cue :go
+end
+
+in_thread do
+  sync :go
+  play :c4
+end";
+    let evts = events(code, DEFAULT_BPM);
+    let t = first_note_time(&evts).expect("synced note should be emitted");
+    assert!(
+        (t - 2.0).abs() < 0.01,
+        "sync :go should delay the note to the cue at 2.0s, got {t}"
+    );
+}
+
+#[test]
+fn parity_sync_without_matching_cue_does_not_block() {
+    // Sonic Pi would hang forever here. Silently dropping the user's music is
+    // worse than starting it, so an unmatched sync is a no-op.
+    let code = "sync :never_cued\nplay :c4";
+    let evts = events(code, DEFAULT_BPM);
+    let t = first_note_time(&evts).expect("note should still be emitted");
+    assert!(
+        t.abs() < 0.01,
+        "unmatched sync should not delay the note, got {t}"
+    );
+}
+
+#[test]
+fn parity_sync_picks_the_next_cue_not_an_earlier_one() {
+    // A cue that has already fired cannot be synced to; the wait resolves to
+    // the *next* one. Cues at 1s and 3s, sync issued at 2s -> lands at 3s.
+    let code = "\
+in_thread do
+  sleep 1
+  cue :tick
+  sleep 2
+  cue :tick
+end
+
+in_thread do
+  sleep 2
+  sync :tick
+  play :c4
+end";
+    let evts = events(code, DEFAULT_BPM);
+    let t = first_note_time(&evts).expect("synced note should be emitted");
+    assert!(
+        (t - 3.0).abs() < 0.01,
+        "sync should wait for the cue at 3.0s, got {t}"
+    );
+}
+
+#[test]
+fn parity_live_loop_sync_opt_delays_first_iteration() {
+    // `live_loop :x, sync: :bar` holds only the first iteration; after that the
+    // loop free-runs on its own body length.
+    let code = "\
+live_loop :metro do
+  sleep 4
+  cue :bar
+  stop
+end
+
+live_loop :melody, sync: :bar do
+  play :c4
+  sleep 1
+  stop
+end";
+    let evts = events(code, DEFAULT_BPM);
+    let t = first_note_time(&evts).expect("synced loop should emit a note");
+    assert!(
+        (t - 4.0).abs() < 0.01,
+        "live_loop sync: :bar should start at the 4.0s cue, got {t}"
+    );
+}
+
+#[test]
+fn parity_cue_alone_does_not_shift_timing() {
+    // `cue` is instantaneous — it must not consume a beat.
+    let with_cue = events("cue :x\nplay :c4\nsleep 1\nplay :e4", DEFAULT_BPM);
+    let without = events("play :c4\nsleep 1\nplay :e4", DEFAULT_BPM);
+    assert_eq!(
+        note_times(&with_cue),
+        note_times(&without),
+        "a bare cue should not move any note"
+    );
+}
+
+// ============================================================================
+// SECTION: with_swing
+//
+// Sonic Pi runs a with_swing block straight except on one invocation in every
+// `pulse`, where it wraps the block in `time_warp shift`. The counter is a
+// tick, so the very first run is the shifted one.
+// ============================================================================
+
+#[test]
+fn parity_with_swing_shifts_one_run_in_every_pulse() {
+    // 8 runs, pulse 4, shift 0.1 beats (0.1s at 60 BPM): runs 0 and 4 are
+    // swung, so their notes sit 0.1s after the beat and the rest sit on it.
+    let code = "\
+8.times do
+  with_swing 0.1, pulse: 4 do
+    play :c4
+  end
+  sleep 1
+end";
+    let evts = events(code, DEFAULT_BPM);
+    let times = note_times(&evts);
+    assert_eq!(times.len(), 8, "should emit one note per run");
+    for (i, t) in times.iter().enumerate() {
+        let expected = i as f32 + if i % 4 == 0 { 0.1 } else { 0.0 };
+        assert!(
+            (t - expected).abs() < 0.01,
+            "run {i}: expected note at {expected}s, got {t}"
+        );
+    }
+}
+
+#[test]
+fn parity_with_swing_does_not_advance_the_parent_clock() {
+    // Like time_warp, the shift displaces the block's contents only. The note
+    // after the block must stay on its own beat.
+    let code = "\
+with_swing 0.25, pulse: 1 do
+  play :c4
+end
+sleep 1
+play :e4";
+    let evts = events(code, DEFAULT_BPM);
+    let times = note_times(&evts);
+    assert_eq!(times.len(), 2);
+    assert!(
+        (times[0] - 0.25).abs() < 0.01,
+        "swung note should be shifted to 0.25s, got {}",
+        times[0]
+    );
+    assert!(
+        (times[1] - 1.0).abs() < 0.01,
+        "following note should stay at 1.0s, got {}",
+        times[1]
+    );
+}
+
+#[test]
+fn parity_with_swing_negative_shift_plays_early() {
+    let code = "\
+sleep 2
+with_swing -0.1, pulse: 1 do
+  play :c4
+end";
+    let evts = events(code, DEFAULT_BPM);
+    let t = first_note_time(&evts).expect("swung note should be emitted");
+    assert!(
+        (t - 1.9).abs() < 0.01,
+        "negative shift should pull the note early to 1.9s, got {t}"
+    );
+}
+
+#[test]
+fn parity_with_swing_separate_tick_keys_count_independently() {
+    // Two swing blocks in the same loop must not share a counter, which is why
+    // Sonic Pi exposes the `tick:` opt.
+    let code = "\
+4.times do
+  with_swing 0.1, pulse: 4, tick: :a do
+    play :c4
+  end
+  with_swing 0.1, pulse: 4, tick: :b do
+    play :e4
+  end
+  sleep 1
+end";
+    let evts = events(code, DEFAULT_BPM);
+    // Both blocks swing on their own run 0, so run 0 has two shifted notes and
+    // runs 1-3 have two straight ones. A shared counter would stagger them.
+    let mut swung = 0;
+    for (t, cmd) in &evts {
+        if matches!(cmd, AudioCommand::PlayNote { .. }) && (t.fract() - 0.1).abs() < 0.01 {
+            swung += 1;
+        }
+    }
+    assert_eq!(swung, 2, "exactly the two run-0 notes should be swung");
+}
+
+#[test]
+fn parity_with_swing_defaults_match_sonic_pi() {
+    // Defaults: shift 0.1 beats, pulse 4.
+    let code = "\
+4.times do
+  with_swing do
+    play :c4
+  end
+  sleep 1
+end";
+    let evts = events(code, DEFAULT_BPM);
+    let times = note_times(&evts);
+    assert_eq!(times.len(), 4);
+    assert!(
+        (times[0] - 0.1).abs() < 0.01,
+        "first run should swing by the default 0.1 beats, got {}",
+        times[0]
+    );
+    for (i, t) in times.iter().enumerate().skip(1) {
+        assert!(
+            (t - i as f32).abs() < 0.01,
+            "run {i} should be straight, got {t}"
+        );
+    }
+}
+
+// ============================================================================
+// SECTION: envelope shaping opts (attack_level / decay_level / env_curve)
+//
+// Sonic Pi's synths build a four-segment envelope
+// (0 -> attack_level -> decay_level -> sustain_level -> 0) whose segment shape
+// is chosen by env_curve. Defaults are attack_level 1, decay_level -1 ("same
+// as sustain_level") and env_curve 1 (linear).
+// ============================================================================
+
+fn first_envelope(evts: &[(f32, AudioCommand)]) -> sonic_daw_lib::audio::synth::Envelope {
+    for (_, cmd) in evts {
+        if let AudioCommand::PlayNote { envelope, .. } = cmd {
+            return *envelope;
+        }
+    }
+    panic!("expected a PlayNote event");
+}
+
+#[test]
+fn parity_envelope_defaults_match_sonic_pi() {
+    let env = first_envelope(&events("play :c4", DEFAULT_BPM));
+    assert_eq!(env.attack_level, 1.0, "attack_level should default to 1");
+    assert_eq!(
+        env.decay_level, -1.0,
+        "decay_level should default to Sonic Pi's -1 sentinel"
+    );
+    assert_eq!(env.curve, 1.0, "env_curve should default to 1 (linear)");
+    assert_eq!(
+        env.effective_decay_level(),
+        env.sustain,
+        "an unset decay_level follows sustain_level"
+    );
+}
+
+#[test]
+fn parity_envelope_opts_are_parsed() {
+    let env = first_envelope(&events(
+        "play :c4, attack: 0.1, attack_level: 0.8, decay: 0.2, decay_level: 0.3, sustain_level: 0.5, env_curve: 3",
+        DEFAULT_BPM,
+    ));
+    assert!((env.attack_level - 0.8).abs() < 1e-5);
+    assert!((env.decay_level - 0.3).abs() < 1e-5);
+    assert!((env.curve - 3.0).abs() < 1e-5);
+    assert!((env.effective_decay_level() - 0.3).abs() < 1e-5);
+}
+
+#[test]
+fn parity_envelope_opts_reach_supercollider_as_synth_params() {
+    // The SC engine forwards every entry in `params` verbatim on /s_new, and
+    // the SynthDefs declare these three, so appearing here is what makes them
+    // take effect on the SuperCollider backend.
+    let evts = events(
+        "play :c4, attack_level: 0.7, decay_level: 0.4, env_curve: 2",
+        DEFAULT_BPM,
+    );
+    let params = evts
+        .iter()
+        .find_map(|(_, c)| match c {
+            AudioCommand::PlayNote { params, .. } => Some(params.clone()),
+            _ => None,
+        })
+        .expect("expected a PlayNote event");
+    let lookup = |name: &str| params.iter().find(|(k, _)| k == name).map(|(_, v)| *v);
+    assert_eq!(lookup("attack_level"), Some(0.7));
+    assert_eq!(lookup("decay_level"), Some(0.4));
+    assert_eq!(lookup("env_curve"), Some(2.0));
+}
+
+#[test]
+fn parity_env_segment_shapes() {
+    use sonic_daw_lib::audio::synth::env_segment;
+
+    // Linear is the default and must stay exactly linear.
+    assert!((env_segment(0.0, 1.0, 0.5, 1.0) - 0.5).abs() < 1e-6);
+    // Step jumps immediately to the target.
+    assert!((env_segment(0.0, 1.0, 0.01, 0.0) - 1.0).abs() < 1e-6);
+    // Sine eases: still 0.5 at the midpoint but slower at the edges.
+    assert!((env_segment(0.0, 1.0, 0.5, 3.0) - 0.5).abs() < 1e-6);
+    assert!(env_segment(0.0, 1.0, 0.25, 3.0) < 0.25);
+    // Squared starts slow.
+    assert!(env_segment(0.0, 1.0, 0.5, 6.0) < 0.5);
+    // Every shape must hit both endpoints exactly.
+    for curve in [0.0, 1.0, 2.0, 3.0, 4.0, 6.0, 7.0] {
+        let end = env_segment(0.2, 0.9, 1.0, curve);
+        assert!(
+            (end - 0.9).abs() < 1e-3,
+            "curve {curve} should reach the target level, got {end}"
+        );
+        if curve != 0.0 {
+            let start = env_segment(0.2, 0.9, 0.0, curve);
+            assert!(
+                (start - 0.2).abs() < 1e-3,
+                "curve {curve} should start at the source level, got {start}"
+            );
+        }
+    }
+    // Exponential through zero must stay finite rather than producing NaN.
+    let v = env_segment(0.0, 1.0, 0.5, 2.0);
+    assert!(v.is_finite(), "exponential segment from 0 should be finite");
 }

@@ -21,10 +21,28 @@ $ProjectRoot = Split-Path -Parent $MyInvocation.MyCommand.Path
 $OutputDir = Join-Path (Join-Path (Join-Path $ProjectRoot "src-tauri") "sc-bundle") "synthdefs"
 $ScdScript = Join-Path $OutputDir "compile_all.scd"
 
-# Ensure output directory and compile script exist
+# Ensure output directory exists
 if (-not (Test-Path $OutputDir)) {
     New-Item -ItemType Directory -Path $OutputDir -Force | Out-Null
 }
+
+# Regenerate compile_all.scd from the Rust source of truth
+# (src-tauri/src/audio/sc_synthdefs.rs). Keeping a hand-maintained copy here
+# let the bundled SynthDefs drift behind the engine.
+Write-Host "[..] Regenerating compile_all.scd from sc_synthdefs.rs..." -ForegroundColor Yellow
+Push-Location (Join-Path $ProjectRoot "src-tauri")
+try {
+    & cargo run --quiet --bin gen_synthdefs -- $OutputDir
+    if ($LASTEXITCODE -ne 0) { throw "gen_synthdefs exited with $LASTEXITCODE" }
+}
+catch {
+    Write-Host "[WARN] Could not regenerate compile_all.scd: $($_.Exception.Message)" -ForegroundColor Yellow
+    Write-Host "       Falling back to the existing script, which may be out of date." -ForegroundColor Yellow
+}
+finally {
+    Pop-Location
+}
+
 if (-not (Test-Path $ScdScript)) {
     Write-Host "[ERROR] compile_all.scd not found at: $ScdScript" -ForegroundColor Red
     exit 1

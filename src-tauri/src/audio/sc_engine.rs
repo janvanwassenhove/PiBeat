@@ -16,14 +16,15 @@ use std::net::UdpSocket;
 use std::path::PathBuf;
 use std::process::{Child, Command, Stdio};
 use std::sync::atomic::{AtomicBool, AtomicI32, Ordering};
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 use parking_lot::Mutex;
-use rosc::{decoder, encoder, OscMessage, OscPacket, OscType};
+use rosc::{decoder, encoder, OscBundle, OscMessage, OscPacket, OscTime, OscType};
 
 use super::engine::AudioCommand;
 use super::sc_synthdefs;
 use super::synth::OscillatorType;
+use crate::trace;
 
 /// Default scsynth port
 const SC_PORT: u16 = 57110;
@@ -39,6 +40,37 @@ const ROOT_GROUP: i32 = 0;
 const SOURCE_GROUP: i32 = 1000;
 const FX_GROUP: i32 = 1001;
 const MONITOR_GROUP: i32 = 1002;
+
+/// Scheduling-ahead time, in seconds.
+///
+/// Sonic Pi does not fire `/s_new` at the instant a note is due — it stamps
+/// each message with an OSC timetag `sched_ahead_time` into the future and
+/// hands it to scsynth early. scsynth then starts the synth on the exact
+/// sample, so note placement no longer depends on how punctually the
+/// language-side thread woke up.
+///
+/// PiBeat now does the same. The value matches Sonic Pi's desktop default
+/// (`Sonic Pi 4.x`: 0.5s); the audible cost is a half-second latency between
+/// pressing Run and the first note, and the gain is that every note lands
+/// where the score says it does instead of wherever the OS scheduler
+/// happened to wake the thread.
+pub const SCHED_AHEAD_SECS: f64 = 0.5;
+
+/// How far ahead of its audible time the scheduler thread hands an event to
+/// scsynth.
+///
+/// This is the OS-jitter budget, not the timing mechanism: as long as the
+/// packet arrives before its timetag, scsynth plays it on the exact sample,
+/// so the thread only has to be roughly on time. That is what lets the
+/// scheduler `sleep` instead of burning a core spin-waiting before every note.
+///
+/// It also bounds how far the band-visualiser events lead the sound, since
+/// those are published when the event is dispatched. 80ms is comfortably
+/// inside the window where a listener reads audio and visuals as
+/// simultaneous, while still absorbing a scheduling hiccup. Code-line
+/// highlighting is not affected — it runs off `playback_start`, which is
+/// anchored to the audible epoch.
+pub const DISPATCH_LOOKAHEAD_SECS: f64 = 0.08;
 
 /// SuperCollider engine state
 pub struct ScEngineState {
@@ -99,6 +131,9 @@ pub struct ScEngine {
     use_bundled: bool,
     /// Buffer for waveform scope (SC buffer ID)
     scope_buffer_id: i32,
+    /// Node ID of the master mixer synth (`sonic_mixer`), or -1 if it could
+    /// not be created. See [`ScEngine::setup_master_mixer`].
+    mixer_node: AtomicI32,
     /// Shared engine state
     pub state: Mutex<ScEngineState>,
     /// Accumulated SC error messages (drained by the frontend via drain_errors())
@@ -180,6 +215,7 @@ impl ScEngine {
             plugins_dir,
             use_bundled,
             scope_buffer_id: 0,
+            mixer_node: AtomicI32::new(-1),
             state: Mutex::new(ScEngineState::default()),
             sc_errors: Mutex::new(Vec::new()),
             synthdefs_loaded: AtomicBool::new(false),
@@ -232,7 +268,12 @@ impl ScEngine {
         // Step 5: Load SynthDefs into scsynth
         self.load_synthdefs()?;
 
-        // Step 6: Set up scope buffer for waveform visualization
+        // Step 6: Insert the master mixer (limiter + DC blocker + safety
+        // filters) before anything else runs in the monitor group, so the
+        // scope and meter see the same signal the speakers do.
+        self.setup_master_mixer();
+
+        // Step 7: Set up scope buffer for waveform visualization
         self.setup_scope()?;
 
         self.is_booted.store(true, Ordering::Relaxed);
@@ -291,6 +332,7 @@ impl ScEngine {
                 pan,
                 &params,
                 fx_context,
+                None,
             ),
             AudioCommand::PlaySample {
                 samples: _,
@@ -333,7 +375,7 @@ impl ScEngine {
                 lpf_cutoff,
                 hpf_cutoff,
             ),
-            AudioCommand::FxStart { fx_type, params, fx_id, parent_fx_id } => self.push_fx_bus(fx_id, parent_fx_id, &fx_type, &params),
+            AudioCommand::FxStart { fx_type, params, fx_id, parent_fx_id } => self.push_fx_bus(fx_id, parent_fx_id, &fx_type, &params, None),
             AudioCommand::FxEnd { fx_id } => self.pop_fx_bus(fx_id),
             AudioCommand::SetRuntimeVar { .. } => {
                 // Handled by the scheduler thread, not by the SC engine directly
@@ -342,7 +384,15 @@ impl ScEngine {
         }
     }
 
-    /// Play a note using a SuperCollider synth
+    /// Play a note using a SuperCollider synth.
+    ///
+    /// `at` is the wall-clock instant the note should *sound*. When it is
+    /// `Some`, the `/s_new` is wrapped in a timestamped OSC bundle so scsynth
+    /// starts the synth on the exact sample rather than whenever the packet
+    /// happens to arrive — this is what gives PiBeat the same rock-steady
+    /// note placement as Sonic Pi. `None` fires the note immediately (used by
+    /// one-shot previews, where latency matters more than placement).
+    #[allow(clippy::too_many_arguments)]
     pub fn play_note(
         &self,
         synth_type: OscillatorType,
@@ -353,6 +403,7 @@ impl ScEngine {
         pan: f32,
         params: &[(String, f32)],
         fx_context: u64,
+        at: Option<SystemTime>,
     ) -> Result<(), String> {
         let node_id = self.alloc_node_id();
         let def_name = sc_synthdefs::synthdef_name(&synth_type);
@@ -397,56 +448,25 @@ impl ScEngine {
             args.push(OscType::Float(*val));
         }
 
-        eprintln!("[SC] /s_new '{}' node={} group={} out={} freq={:.1} amp={:.3} atk={:.3} dec={:.3} sus={:.3} rel={:.3} sus_lvl={:.3}",
+        trace!("[SC] /s_new '{}' node={} group={} out={} freq={:.1} amp={:.3} atk={:.3} dec={:.3} sus={:.3} rel={:.3} sus_lvl={:.3}",
             def_name, node_id, SOURCE_GROUP, out_bus, frequency, amplitude * master_vol,
             envelope.attack, envelope.decay, sustain_time, envelope.release, envelope.sustain);
 
-        self.send_osc_msg("/s_new", args)?;
-
-        // Brief non-blocking check for /fail response from scsynth.
-        // If the SynthDef doesn't exist, scsynth replies with /fail immediately.
-        {
-            let _ = self.socket.set_nonblocking(true);
-            let mut buf = [0u8; 65536];
-            // Try reading up to 5 messages within a short window
-            for _ in 0..5 {
-                match self.socket.recv_from(&mut buf) {
-                    Ok((size, _)) => {
-                        if let Ok((_, packet)) = decoder::decode_udp(&buf[..size]) {
-                            if let OscPacket::Message(msg) = &packet {
-                                if msg.addr == "/fail" {
-                                    let err_detail: String = msg
-                                        .args
-                                        .iter()
-                                        .map(|a| format!("{:?}", a))
-                                        .collect::<Vec<_>>()
-                                        .join(" ");
-                                    let err_msg = format!(
-                                        "SC /s_new FAILED for '{}' (node {}): {}",
-                                        def_name, node_id, err_detail
-                                    );
-                                    eprintln!("[SC] {}", err_msg);
-                                    self.sc_errors.lock().push(err_msg.clone());
-                                    // Don't return Err — the sound still partially works
-                                    // (scsynth substitutes the default SynthDef)
-                                }
-                            }
-                        }
-                    }
-                    Err(_) => break, // No more messages
-                }
-            }
-            let _ = self.socket.set_nonblocking(false);
-            let _ = self
-                .socket
-                .set_read_timeout(Some(Duration::from_millis(500)));
-        }
+        // Note: we deliberately do NOT drain the socket looking for `/fail`
+        // here. That cost two `set_nonblocking` syscalls plus up to five
+        // `recvfrom` calls on every single note, on the thread responsible
+        // for dispatching them on time, and it stole replies that
+        // `process_incoming` needs. Failures still surface — the status poll
+        // picks up `/fail` and routes it to the log panel.
+        self.dispatch("/s_new", args, at)?;
 
         self.state.lock().is_playing = true;
         Ok(())
     }
 
-    /// Play a sample that has been loaded into a SC buffer
+    /// Play a sample that has been loaded into a SC buffer.
+    ///
+    /// `at` behaves as in [`ScEngine::play_note`].
     pub fn play_sample_buffer(
         &self,
         buffer_id: i32,
@@ -454,12 +474,13 @@ impl ScEngine {
         rate: f32,
         pan: f32,
         fx_context: u64,
+        at: Option<SystemTime>,
     ) -> Result<(), String> {
         let node_id = self.alloc_node_id();
         let master_vol = self.state.lock().master_volume;
         let out_bus = self.bus_for_fx_context(fx_context);
 
-        self.send_osc_msg(
+        self.dispatch(
             "/s_new",
             vec![
                 OscType::String("sonic_playbuf".to_string()),
@@ -477,6 +498,7 @@ impl ScEngine {
                 OscType::String("pan".to_string()),
                 OscType::Float(pan),
             ],
+            at,
         )?;
 
         self.state.lock().is_playing = true;
@@ -555,6 +577,12 @@ impl ScEngine {
 
     /// Stop all audio and reset all state for a clean restart
     pub fn stop_all(&self) -> Result<(), String> {
+        // Drop anything still sitting in scsynth's scheduling queue first.
+        // Events are handed over up to SCHED_AHEAD_SECS early, so without
+        // this the user would keep hearing notes for half a second after
+        // pressing Stop.
+        self.send_osc_msg("/clearSched", vec![])?;
+
         // Free all nodes in the source group
         self.send_osc_msg("/g_freeAll", vec![OscType::Int(SOURCE_GROUP)])?;
 
@@ -801,7 +829,7 @@ impl ScEngine {
         if let Some(&(bus_id, _)) = map.get(&fx_context) {
             bus_id
         } else {
-            eprintln!("[SC] Warning: fx_context {} not found in bus map, using hardware out", fx_context);
+            trace!("[SC] Warning: fx_context {} not found in bus map, using hardware out", fx_context);
             0
         }
     }
@@ -812,7 +840,11 @@ impl ScEngine {
     /// that bus and writes to the parent FX bus (or hardware 0).
     /// The fx_id is stored in the map so subsequent play commands with
     /// the matching fx_context route to this bus.
-    pub fn push_fx_bus(&self, fx_id: u64, parent_fx_id: u64, fx_type: &str, params: &[(String, f32)]) -> Result<(), String> {
+    ///
+    /// `at` behaves as in [`ScEngine::play_note`]: the FX synth is created by
+    /// a timestamped bundle so it exists on the same sample as the first note
+    /// routed through it.
+    pub fn push_fx_bus(&self, fx_id: u64, parent_fx_id: u64, fx_type: &str, params: &[(String, f32)], at: Option<SystemTime>) -> Result<(), String> {
         let new_bus = self.alloc_audio_bus();
         let parent_bus = self.bus_for_fx_context(parent_fx_id);
 
@@ -860,9 +892,9 @@ impl ScEngine {
             args.push(OscType::Float(*val));
         }
 
-        self.send_osc_msg("/s_new", args)?;
+        self.dispatch("/s_new", args, at)?;
 
-        eprintln!(
+        trace!(
             "[SC] Pushed FX bus: type={}, bus={}, parent_bus={}, node={}, fx_id={}",
             fx_type, new_bus, parent_bus, fx_node_id, fx_id
         );
@@ -881,11 +913,58 @@ impl ScEngine {
             // Don't /n_free — let DetectSilence in the SynthDef auto-free
             // when audio stops flowing. This keeps the FX synth alive
             // during note release phases.
-            eprintln!("[SC] Popped FX bus: node={}, fx_id={} (auto-free via DetectSilence)", fx_node_id, fx_id);
+            trace!("[SC] Popped FX bus: node={}, fx_id={} (auto-free via DetectSilence)", fx_node_id, fx_id);
         } else {
-            eprintln!("[SC] Warning: pop_fx_bus called with unknown fx_id={}", fx_id);
+            trace!("[SC] Warning: pop_fx_bus called with unknown fx_id={}", fx_id);
         }
         Ok(())
+    }
+
+    /// Create the master mixer synth at the head of the monitor group.
+    ///
+    /// Sonic Pi never sends a synth's output straight to the sound card: it
+    /// runs the whole mix through `sonic-pi-mixer`, which DC-blocks, limits at
+    /// 0.99, hard-clips, and applies fixed 10 Hz / 20.5 kHz safety filters.
+    /// PiBeat previously wrote synths directly to hardware bus 0, so a dense
+    /// pattern that Sonic Pi would ride into its limiter instead clipped
+    /// against the converter — the single most audible difference between the
+    /// two engines on busy material.
+    ///
+    /// The mixer reads bus 0 (everything the source and FX groups summed into
+    /// it) and `ReplaceOut`s the processed signal, so it must run before the
+    /// scope and meter — hence head of the monitor group, created before
+    /// [`ScEngine::setup_scope`].
+    ///
+    /// A missing `sonic_mixer` SynthDef (e.g. a bundle compiled by an older
+    /// PiBeat) is not fatal: the `/s_new` simply fails and audio flows
+    /// straight through as it did before.
+    fn setup_master_mixer(&self) {
+        let node_id = self.alloc_node_id();
+        let res = self.send_osc_msg(
+            "/s_new",
+            vec![
+                OscType::String("sonic_mixer".to_string()),
+                OscType::Int(node_id),
+                OscType::Int(ADD_TO_HEAD),
+                OscType::Int(MONITOR_GROUP),
+                OscType::String("bus".to_string()),
+                OscType::Int(0),
+                OscType::String("amp".to_string()),
+                OscType::Float(1.0),
+            ],
+        );
+        match res {
+            Ok(()) => {
+                self.mixer_node.store(node_id, Ordering::Relaxed);
+                eprintln!(
+                    "[SC] Master mixer created (node {}): LeakDC → Limiter(0.99) → clip → 10Hz/20.5kHz",
+                    node_id
+                );
+            }
+            Err(e) => {
+                eprintln!("[SC] Master mixer could not be created ({e}); running without limiter");
+            }
+        }
     }
 
     /// Start the scsynth subprocess
@@ -1125,6 +1204,7 @@ impl ScEngine {
         self.load_synthdef_via_recv("sonic_saw")?;
         self.load_synthdef_via_recv("sonic_square")?;
         self.load_synthdef_via_recv("sonic_playbuf")?;
+        self.load_synthdef_via_recv("sonic_mixer")?;
 
         // Verify at least sonic_beep is available
         self.verify_synthdef_available("sonic_beep")?;
@@ -1515,6 +1595,43 @@ impl ScEngine {
     // ================================================================
     // OSC COMMUNICATION
     // ================================================================
+
+    /// Send an OSC message, optionally as a timestamped bundle.
+    ///
+    /// With `at = Some(t)` the message is wrapped in an OSC bundle carrying an
+    /// NTP timetag for `t`, which tells scsynth to execute it at that instant
+    /// instead of on arrival. This is the mechanism behind sample-accurate
+    /// note placement — see [`SCHED_AHEAD_SECS`].
+    fn dispatch(&self, addr: &str, args: Vec<OscType>, at: Option<SystemTime>) -> Result<(), String> {
+        match at {
+            None => self.send_osc_msg(addr, args),
+            Some(when) => {
+                let timetag = match OscTime::try_from(when) {
+                    Ok(t) => t,
+                    // A time we cannot express as an NTP timetag (before 1900,
+                    // or absurdly far out) should not silence the note.
+                    Err(_) => return self.send_osc_msg(addr, args),
+                };
+                let bundle = OscBundle {
+                    timetag,
+                    content: vec![OscPacket::Message(OscMessage {
+                        addr: addr.to_string(),
+                        args,
+                    })],
+                };
+                self.send_packet(&OscPacket::Bundle(bundle))
+            }
+        }
+    }
+
+    /// Encode and send an already-built OSC packet.
+    fn send_packet(&self, packet: &OscPacket) -> Result<(), String> {
+        let buf = encoder::encode(packet).map_err(|e| format!("OSC encode error: {}", e))?;
+        self.socket
+            .send_to(&buf, format!("127.0.0.1:{}", self.sc_port))
+            .map_err(|e| format!("OSC send error: {}", e))?;
+        Ok(())
+    }
 
     /// Send an OSC message to scsynth
     fn send_osc_msg(&self, addr: &str, args: Vec<OscType>) -> Result<(), String> {

@@ -1,5 +1,6 @@
 import React, { useEffect, useState, useMemo, useRef, useCallback } from 'react';
 import { useStore, UserSampleInfo } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { invoke } from '@tauri-apps/api/core';
 import { open } from '@tauri-apps/plugin-dialog';
 import {
@@ -107,7 +108,24 @@ const UserSamplePanel: React.FC = () => {
     updateBufferCode,
     buffers,
     activeBufferId,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      userSamples: s.userSamples,
+      userSamplesDir: s.userSamplesDir,
+      userSamplesLoading: s.userSamplesLoading,
+      userSamplesScanProgress: s.userSamplesScanProgress,
+      showUserSamplePanel: s.showUserSamplePanel,
+      toggleUserSamplePanel: s.toggleUserSamplePanel,
+      setUserSamplesDir: s.setUserSamplesDir,
+      scanUserSamples: s.scanUserSamples,
+      fullRescanUserSamples: s.fullRescanUserSamples,
+      playSampleFile: s.playSampleFile,
+      stopAudio: s.stopAudio,
+      updateBufferCode: s.updateBufferCode,
+      buffers: s.buffers,
+      activeBufferId: s.activeBufferId,
+    })),
+  );
 
   const [filter, setFilter] = useState('');
   const [groupBy, setGroupBy] = useState<GroupBy>('type');

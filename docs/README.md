@@ -27,6 +27,12 @@ Welcome to the PiBeat documentation! This directory contains comprehensive guide
   - Smart context management
   - Retry logic with exponential backoff
 
+- **[PERFORMANCE_AUDIT.md](PERFORMANCE_AUDIT.md)** - Where PiBeat spends time and CPU
+  - Visual loading: bundling Monaco, lazy editor, chunk splitting
+  - Idle cost: scope polling, the visual engine's frame loop
+  - Playback: scheduler logging, spin-waiting, per-note syscalls
+  - What was measured, and what is still outstanding
+
 - **[PARSER_LIMITATIONS.md](PARSER_LIMITATIONS.md)** - Sonic Pi parser features and limitations
   - Newly supported features (define blocks, randomization, rings, spreads)
   - Supported scales and chords (50+ scales, 20+ chord types)

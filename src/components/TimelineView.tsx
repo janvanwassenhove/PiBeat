@@ -1,5 +1,6 @@
 import React, { useMemo, useState, useRef, useCallback, useEffect } from 'react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import { parseCodeToTimeline, extractCodeSampleNames, TimelineClip, TimelineTrack, ClipEffect, TimelineData, SectionMarker } from '../timelineParser';
 import {
   applyClipAmpChange,
@@ -784,7 +785,29 @@ const TrackLane: React.FC<{
 // ─── Main TimelineView ──────────────────────────────────────────
 
 const TimelineView: React.FC = () => {
-  const { bpm, isPlaying, isPaused, updateBufferCode, activeBufferId, setupTimeMs, sampleDurations, fetchSampleDurations, runCode } = useStore();
+  const {
+    bpm,
+    isPlaying,
+    isPaused,
+    updateBufferCode,
+    activeBufferId,
+    setupTimeMs,
+    sampleDurations,
+    fetchSampleDurations,
+    runCode,
+  } = useStore(
+    useShallow((s) => ({
+      bpm: s.bpm,
+      isPlaying: s.isPlaying,
+      isPaused: s.isPaused,
+      updateBufferCode: s.updateBufferCode,
+      activeBufferId: s.activeBufferId,
+      setupTimeMs: s.setupTimeMs,
+      sampleDurations: s.sampleDurations,
+      fetchSampleDurations: s.fetchSampleDurations,
+      runCode: s.runCode,
+    })),
+  );
   // Subscribe only to the active buffer's code to avoid re-renders when other buffers change
   const activeBuffer = useStore((s) => s.buffers.find(b => b.id === s.activeBufferId));
   const [pixelsPerBeat, setPixelsPerBeat] = useState(24);

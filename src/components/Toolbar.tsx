@@ -1,5 +1,6 @@
 import React, { useEffect } from 'react';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 import {
   FaPlay,
   FaStop,
@@ -67,7 +68,42 @@ const Toolbar: React.FC = () => {
     initSuperCollider,
     toggleScEngine,
     fetchScStatus,
-  } = useStore();
+  } = useStore(
+    useShallow((s) => ({
+      isPlaying: s.isPlaying,
+      isPaused: s.isPaused,
+      isRecording: s.isRecording,
+      masterVolume: s.masterVolume,
+      scStatus: s.scStatus,
+      theme: s.theme,
+      runCode: s.runCode,
+      stopAudio: s.stopAudio,
+      pauseAudio: s.pauseAudio,
+      resumeAudio: s.resumeAudio,
+      setVolume: s.setVolume,
+      startRecording: s.startRecording,
+      stopRecording: s.stopRecording,
+      toggleSampleBrowser: s.toggleSampleBrowser,
+      toggleSynthBrowser: s.toggleSynthBrowser,
+      toggleEffectsPanel: s.toggleEffectsPanel,
+      toggleHelp: s.toggleHelp,
+      toggleAgentChat: s.toggleAgentChat,
+      toggleCuePanel: s.toggleCuePanel,
+      toggleUserSamplePanel: s.toggleUserSamplePanel,
+      toggleBandVisualizer: s.toggleBandVisualizer,
+      showSampleBrowser: s.showSampleBrowser,
+      showSynthBrowser: s.showSynthBrowser,
+      showEffectsPanel: s.showEffectsPanel,
+      showHelp: s.showHelp,
+      showAgentChat: s.showAgentChat,
+      showCuePanel: s.showCuePanel,
+      showUserSamplePanel: s.showUserSamplePanel,
+      showBandVisualizer: s.showBandVisualizer,
+      initSuperCollider: s.initSuperCollider,
+      toggleScEngine: s.toggleScEngine,
+      fetchScStatus: s.fetchScStatus,
+    })),
+  );
 
   // Check SC status on mount
   useEffect(() => {

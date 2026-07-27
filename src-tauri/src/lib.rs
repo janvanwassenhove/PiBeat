@@ -1,10 +1,12 @@
 pub mod audio;
+#[macro_use]
+pub mod trace;
 
 use audio::engine::{AudioCommand, AudioEngine};
 use audio::parser::{commands_to_audio, validate_and_parse, ParsedCommand};
 use audio::recorder::Recorder;
 use audio::sample::{self, SampleInfo};
-use audio::sc_engine::{find_sc_bundle_dir, ScEngine};
+use audio::sc_engine::{self, find_sc_bundle_dir, ScEngine};
 use audio::synth::{Envelope, OscillatorType};
 use audio::visualizer::{
     EventPublisher, FxCategory, PerformanceEvent, PerformanceSnapshot, SampleCategory,
@@ -15,9 +17,9 @@ use parking_lot::Mutex;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
-use std::time::{Duration, Instant};
+use std::time::{Duration, Instant, SystemTime};
 
 // Windows high-resolution timer (1ms precision for scheduler thread)
 #[cfg(target_os = "windows")]
@@ -45,7 +47,14 @@ struct AppState {
     loaded_samples: Mutex<HashMap<String, (Vec<f32>, u32)>>,
     /// Sample durations in seconds for beat_stretch calculation
     sample_durations: Mutex<HashMap<String, f32>>,
-    session_id: Mutex<u64>,
+    /// Monotonically increasing playback session counter.
+    ///
+    /// Scheduler threads compare it against the session they were started for
+    /// and bail out when it changes. That check runs twice per scheduled
+    /// event, so it is an atomic rather than a mutex — taking a lock tens of
+    /// thousands of times on the thread that has to dispatch notes on time is
+    /// contention nobody needs.
+    session_id: AtomicU64,
     log_messages: Mutex<Vec<LogEntry>>,
     user_samples_dir: Mutex<Option<PathBuf>>,
     /// Line intervals for highlighting: each entry is (start_time, end_time, line_number)
@@ -224,7 +233,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
             ParsedCommand::Loop { name, commands, .. } => {
                 loop_count += 1;
                 let has_stop = commands.iter().any(|c| matches!(c, ParsedCommand::Stop));
-                eprintln!(
+                trace!(
                     "[run_code]   live_loop :{} ({} inner cmds, stop={})",
                     name,
                     commands.len(),
@@ -233,7 +242,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
             }
             ParsedCommand::PlaySample { name, .. } => {
                 sample_count += 1;
-                eprintln!("[run_code]   sample: {}", name);
+                trace!("[run_code]   sample: {}", name);
             }
             ParsedCommand::PlayNote { .. } => {
                 note_count += 1;
@@ -303,14 +312,13 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
 
     // Start a new playback session by incrementing the session ID
     // This invalidates all old scheduled threads from previous buffers
-    let current_session = {
-        let mut session = state.session_id.lock();
-        *session = session.wrapping_add(1);
-        *session
-    };
+    let current_session = state.session_id.fetch_add(1, Ordering::SeqCst).wrapping_add(1);
 
-    // Build line intervals for highlighting
-    let line_intervals = build_line_intervals(&code, effective_bpm);
+    // Build line intervals for highlighting. Sorted by start time so
+    // get_active_lines — which runs on a 50ms poll for the whole of playback —
+    // can stop scanning at the first interval that has not begun yet.
+    let mut line_intervals = build_line_intervals(&code, effective_bpm);
+    line_intervals.sort_by(|a, b| a.start.partial_cmp(&b.start).unwrap_or(std::cmp::Ordering::Equal));
     // Compute max highlight end time so scheduler threads know how long to keep
     // playback_start alive (intervals must remain queryable until they expire).
     let max_highlight_end = line_intervals
@@ -689,11 +697,19 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
             // so both the thread and the setup_time_ms use the same reference point
             let schedule_ref = Instant::now();
             scheduler_started = schedule_ref;
-            // Set playback start for line highlighting
-            *state.playback_start.lock() = Some(schedule_ref);
+            // Events are timestamped SCHED_AHEAD_SECS into the future, so the
+            // first note sounds then — not now. Anchor line highlighting to
+            // that audible epoch or every highlight runs half a second early.
+            let sched_ahead = Duration::from_secs_f64(sc_engine::SCHED_AHEAD_SECS);
+            *state.playback_start.lock() = Some(schedule_ref + sched_ahead);
             let vis_pub_sc = state.visual_publisher.clone();
             vis_pub_sc.publish(PerformanceEvent::PlaybackStarted);
             vis_pub_sc.publish(PerformanceEvent::BpmChange { bpm: effective_bpm });
+            // Wall-clock anchor for OSC timetags. Paired with `schedule_ref`
+            // (a monotonic Instant) so event N's audible time is
+            // `sched_epoch + SCHED_AHEAD_SECS + target_time`, computed from a
+            // single reference rather than from "now" at dispatch.
+            let sched_epoch = SystemTime::now();
             std::thread::spawn(move || {
                 let state_for_cleanup = Arc::clone(&state_clone);
                 let vis_for_cleanup = vis_pub_sc.clone();
@@ -726,7 +742,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                     }
 
                     // Check if session is still valid
-                    if *state_clone.session_id.lock() != current_session {
+                    if state_clone.session_id.load(Ordering::Relaxed) != current_session {
                         eprintln!("[SC scheduler] Session cancelled, stopping scheduler");
                         vis_pub_sc.publish(PerformanceEvent::PlaybackStopped);
                         #[cfg(target_os = "windows")]
@@ -736,26 +752,26 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                         return;
                     }
 
-                    // Wait until the target time using high-precision timing
-                    let elapsed = start_time.elapsed().as_secs_f64();
+                    // The event is audible at `SCHED_AHEAD + target_time` and
+                    // must reach scsynth DISPATCH_LOOKAHEAD before that.
+                    // Precision no longer comes from waking at exactly the
+                    // right moment — every message carries an OSC timetag, so
+                    // scsynth places it on the exact sample. That lets this
+                    // loop sleep instead of burning a core in a spin-wait for
+                    // up to 18ms before every single note.
                     let target = target_time as f64;
-                    let wait = target - elapsed;
-                    if wait > 0.0005 {
-                        // Windows thread::sleep has ~15.6ms granularity by default.
-                        // Use coarse sleep + spin-wait for precision.
-                        if wait > 0.020 {
-                            // Sleep for most of the time, leaving 18ms margin for spin-wait
-                            let coarse = Duration::from_secs_f64((wait - 0.018).max(0.0));
-                            std::thread::sleep(coarse);
-                        }
-                        // Spin-wait for the remaining time (up to ~18ms on Windows)
-                        while (start_time.elapsed().as_secs_f64()) < target {
-                            std::hint::spin_loop();
-                        }
+                    let dispatch_at = sc_engine::SCHED_AHEAD_SECS + target
+                        - sc_engine::DISPATCH_LOOKAHEAD_SECS;
+                    let wait = dispatch_at - start_time.elapsed().as_secs_f64();
+                    if wait > 0.0 {
+                        std::thread::sleep(Duration::from_secs_f64(wait));
                     }
+                    // Wall-clock instant this event should sound.
+                    let play_at = sched_epoch
+                        + Duration::from_secs_f64(sc_engine::SCHED_AHEAD_SECS + target);
 
                     // Re-check session after sleeping
-                    if *state_clone.session_id.lock() != current_session {
+                    if state_clone.session_id.load(Ordering::Relaxed) != current_session {
                         vis_pub_sc.publish(PerformanceEvent::PlaybackStopped);
                         #[cfg(target_os = "windows")]
                         unsafe {
@@ -769,7 +785,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
 
                     // Handle runtime variable commands (processed by scheduler, not SC)
                     if let ScEvent::SetRuntimeVar { ref key, value } = evt {
-                        eprintln!("[SC scheduler] runtime set :{} = {:.4}", key, value);
+                        trace!("[SC scheduler] runtime set :{} = {:.4}", key, value);
                         runtime_vars.insert(key.clone(), value);
                         continue;
                     }
@@ -778,7 +794,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                     if state_clone.is_paused.load(Ordering::Relaxed) {
                         // Spin-wait while paused, checking session validity
                         while state_clone.is_paused.load(Ordering::Relaxed) {
-                            if *state_clone.session_id.lock() != current_session {
+                            if state_clone.session_id.load(Ordering::Relaxed) != current_session {
                                 vis_pub_sc.publish(PerformanceEvent::PlaybackStopped);
                                 #[cfg(target_os = "windows")]
                                 unsafe { timeEndPeriod(1); }
@@ -842,7 +858,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                                 pan,
                                 fx_context,
                             } => {
-                                if let Err(e) = sc.play_sample_buffer(buf_id, amp, rate, pan, fx_context) {
+                                if let Err(e) = sc.play_sample_buffer(buf_id, amp, rate, pan, fx_context, Some(play_at)) {
                                     eprintln!("[SC scheduler] sample play failed: {}", e);
                                     event_ok = false;
                                     let mut log_store = state_clone.log_messages.lock();
@@ -864,10 +880,10 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                                 fx_context,
                             } => {
                                 let def_name = audio::sc_synthdefs::synthdef_name(&synth_type);
-                                eprintln!("[SC scheduler] Playing {} freq={:.1} amp={:.2} dur={:.2} env(a={:.2},d={:.2},s={:.2},r={:.2})",
+                                trace!("[SC scheduler] Playing {} freq={:.1} amp={:.2} dur={:.2} env(a={:.2},d={:.2},s={:.2},r={:.2})",
                                     def_name, freq, amp, dur, env.attack, env.decay, env.sustain, env.release);
                                 if let Err(e) =
-                                    sc.play_note(synth_type, freq, amp, dur, &env, pan, params, fx_context)
+                                    sc.play_note(synth_type, freq, amp, dur, &env, pan, params, fx_context, Some(play_at))
                                 {
                                     eprintln!("[SC scheduler] note play failed: {}", e);
                                     event_ok = false;
@@ -905,7 +921,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                                 fx_id,
                                 parent_fx_id,
                             } => {
-                                if let Err(e) = sc.push_fx_bus(fx_id, parent_fx_id, fx_type, params) {
+                                if let Err(e) = sc.push_fx_bus(fx_id, parent_fx_id, fx_type, params, Some(play_at)) {
                                     eprintln!("[SC scheduler] FxStart failed: {}", e);
                                 }
                             }
@@ -926,10 +942,10 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                     dispatched_count += 1;
                     if !event_ok { failed_count += 1; }
                     // Log periodic progress to the Log Panel
-                    if dispatched_count % progress_interval == 0 {
+                if dispatched_count % progress_interval == 0 {
                         let pct = (dispatched_count * 100) / event_count;
                         let elapsed_s = start_time.elapsed().as_secs_f64();
-                        eprintln!("[SC scheduler] Progress: {}/{} events ({}%) at {:.1}s, {} failures",
+                        trace!("[SC scheduler] Progress: {}/{} events ({}%) at {:.1}s, {} failures",
                             dispatched_count, event_count, pct, elapsed_s, failed_count);
                         let mut log_store = state_clone.log_messages.lock();
                         log_store.push(LogEntry {
@@ -943,13 +959,16 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                 eprintln!("[SC scheduler] All {} events dispatched ({} failed)", event_count, failed_count);
                 // Wait until all line-highlight intervals have expired before
                 // clearing playback_start, so sample / late lines stay lit.
-                let elapsed = start_time.elapsed().as_secs_f32();
+                // Highlight times are relative to the audible epoch, which is
+                // SCHED_AHEAD_SECS after this thread started.
+                let elapsed =
+                    (start_time.elapsed().as_secs_f32() - sc_engine::SCHED_AHEAD_SECS as f32).max(0.0);
                 let remaining = max_highlight_end - elapsed;
                 if remaining > 0.0 {
                     // Check session validity while waiting
                     let wait_until = std::time::Instant::now() + Duration::from_secs_f32(remaining);
                     while std::time::Instant::now() < wait_until {
-                        if *state_clone.session_id.lock() != current_session {
+                        if state_clone.session_id.load(Ordering::Relaxed) != current_session {
                             break;
                         }
                         std::thread::sleep(Duration::from_millis(50));
@@ -1092,7 +1111,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                                     // We want rate such that sample_duration / rate = desired_duration
                                     // => rate = sample_duration / desired_duration
                                     final_rate = *rate * (sample_duration_secs / desired_duration_secs);
-                                    eprintln!(
+                                    trace!(
                                         "[cpal] beat_stretch: {} beats -> sample {:.2}s at BPM {} = target {:.2}s, rate {:.3}",
                                         bs, sample_duration_secs, effective_bpm, desired_duration_secs, final_rate
                                     );
@@ -1117,7 +1136,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                             ));
                             visual_sample_hints.push(Some(sample_cat));
                         } else {
-                            eprintln!("[cpal scheduler] sample '{}' not in cache, skipping", name);
+                            trace!("[cpal scheduler] sample '{}' not in cache, skipping", name);
                         }
                     }
                 }
@@ -1195,7 +1214,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                 }
 
                 // Check if session is still valid
-                if *state_clone.session_id.lock() != current_session {
+                if state_clone.session_id.load(Ordering::Relaxed) != current_session {
                     eprintln!("[cpal scheduler] Session cancelled, stopping");
                     vis_pub.publish(PerformanceEvent::PlaybackStopped);
                     #[cfg(target_os = "windows")]
@@ -1222,7 +1241,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                 }
 
                 // Re-check session after sleeping
-                if *state_clone.session_id.lock() != current_session {
+                if state_clone.session_id.load(Ordering::Relaxed) != current_session {
                     vis_pub.publish(PerformanceEvent::PlaybackStopped);
                     #[cfg(target_os = "windows")]
                     unsafe {
@@ -1233,7 +1252,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
 
                 // Handle runtime variable commands (processed by scheduler, not audio thread)
                 if let AudioCommand::SetRuntimeVar { ref key, value } = cmd {
-                    eprintln!("[cpal scheduler] runtime set :{} = {:.4}", key, value);
+                    trace!("[cpal scheduler] runtime set :{} = {:.4}", key, value);
                     runtime_vars.insert(key.clone(), value);
                     continue;
                 }
@@ -1242,7 +1261,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                 if state_clone.is_paused.load(Ordering::Relaxed) {
                     // Spin-wait while paused, checking session validity
                     while state_clone.is_paused.load(Ordering::Relaxed) {
-                        if *state_clone.session_id.lock() != current_session {
+                        if state_clone.session_id.load(Ordering::Relaxed) != current_session {
                             vis_pub.publish(PerformanceEvent::PlaybackStopped);
                             #[cfg(target_os = "windows")]
                             unsafe { timeEndPeriod(1); }
@@ -1340,7 +1359,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
                 if dispatched_count % progress_interval == 0 {
                     let pct = (dispatched_count * 100) / event_count;
                     let elapsed_s = start_time.elapsed().as_secs_f64();
-                    eprintln!("[cpal scheduler] Progress: {}/{} events ({}%) at {:.1}s, {} send failures",
+                    trace!("[cpal scheduler] Progress: {}/{} events ({}%) at {:.1}s, {} send failures",
                         dispatched_count, event_count, pct, elapsed_s, send_failures);
                     let mut log_store = state_clone.log_messages.lock();
                     log_store.push(LogEntry {
@@ -1360,7 +1379,7 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
             if remaining > 0.0 {
                 let wait_until = std::time::Instant::now() + Duration::from_secs_f32(remaining);
                 while std::time::Instant::now() < wait_until {
-                    if *state_clone.session_id.lock() != current_session {
+                    if state_clone.session_id.load(Ordering::Relaxed) != current_session {
                         break;
                     }
                     std::thread::sleep(Duration::from_millis(50));
@@ -1430,7 +1449,17 @@ fn run_code(code: String, state: tauri::State<Arc<AppState>>) -> Result<RunResul
         logs,
         duration_estimate: max_time + 1.0,
         effective_bpm,
-        setup_time_ms: scheduler_started.elapsed().as_secs_f64() * 1000.0,
+        // How far into the piece playback already is when the frontend gets
+        // this response, so the timeline playhead can start in the right
+        // place. On the SC path the first note is timestamped
+        // SCHED_AHEAD_SECS out, so this is normally negative — the playhead
+        // starts slightly in the future and counts down to zero.
+        setup_time_ms: scheduler_started.elapsed().as_secs_f64() * 1000.0
+            - if using_sc {
+                sc_engine::SCHED_AHEAD_SECS * 1000.0
+            } else {
+                0.0
+            },
     })
 }
 
@@ -1518,7 +1547,7 @@ fn preload_samples(parsed: &[ParsedCommand], state: &Arc<AppState>) -> Result<()
                 let mut loaded = state.loaded_samples.lock();
                 let path = resolve_sample_path(name, &state.samples_dir);
                 let path_str = path.to_string_lossy().to_string();
-                eprintln!(
+                trace!(
                     "[preload] sample '{}' -> resolved path '{}'",
                     name, path_str
                 );
@@ -1527,7 +1556,7 @@ fn preload_samples(parsed: &[ParsedCommand], state: &Arc<AppState>) -> Result<()
                     if path.exists() {
                         match sample::load_wav(&path_str) {
                             Ok((samples, sr)) => {
-                                eprintln!(
+                                trace!(
                                     "[preload] Loaded '{}': {} samples @ {}Hz",
                                     path_str,
                                     samples.len(),
@@ -1620,7 +1649,7 @@ fn schedule_samples_with_timing(
                 let path_str = path.to_string_lossy().to_string();
 
                 if let Some((samples, sr)) = loaded.get(&path_str) {
-                    eprintln!(
+                    trace!(
                         "[schedule_samples] #{} t={:.2}s '{}' -> scheduling ({} samples)",
                         sample_idx - 1,
                         time_offset,
@@ -1651,7 +1680,7 @@ fn schedule_samples_with_timing(
                         std::thread::spawn(move || {
                             std::thread::sleep(delay);
                             // Only send if this session is still active
-                            if *state_clone.session_id.lock() == current_session {
+                            if state_clone.session_id.load(Ordering::Relaxed) == current_session {
                                 if let Err(e) = tx.try_send(cmd_to_send) {
                                     eprintln!(
                                         "[schedule_samples] SAMPLE command send failed: {}",
@@ -1663,7 +1692,7 @@ fn schedule_samples_with_timing(
                     }
                     scheduled += 1;
                 } else {
-                    eprintln!("[schedule_samples] #{} MISS: '{}' not in loaded cache (resolved path: '{}')", sample_idx - 1, name, path_str);
+                    trace!("[schedule_samples] #{} MISS: '{}' not in loaded cache (resolved path: '{}')", sample_idx - 1, name, path_str);
                 }
             }
         }
@@ -1722,8 +1751,11 @@ fn collect_sample_names_recursive(
                 // (audio engine emits with amp=0 when condition fails)
                 collect_sample_names_recursive(&[(**command).clone()], names, 1);
             }
-            ParsedCommand::AtBlock { commands, .. } => {
-                // Collect sample names from at block commands
+            ParsedCommand::AtBlock { commands, .. }
+            | ParsedCommand::SwingBlock { commands, .. } => {
+                // Collect sample names from at/time_warp/with_swing blocks.
+                // Missing a nested block here would shift every later sample's
+                // index and make the whole run play the wrong sounds.
                 collect_sample_names_recursive(commands, names, 1);
             }
             ParsedCommand::SleepUntil(_) => {
@@ -1821,7 +1853,9 @@ fn collect_logs(parsed: &[ParsedCommand], logs: &mut Vec<LogEntry>) {
             }
             ParsedCommand::Loop { commands, .. }
             | ParsedCommand::WithFx { commands, .. }
-            | ParsedCommand::TimesLoop { commands, .. } => {
+            | ParsedCommand::TimesLoop { commands, .. }
+            | ParsedCommand::AtBlock { commands, .. }
+            | ParsedCommand::SwingBlock { commands, .. } => {
                 collect_logs(commands, logs);
             }
             _ => {}
@@ -2262,7 +2296,7 @@ fn extract_play_duration(line: &str, default: f32) -> f32 {
 /// Handles: full file paths, Sonic Pi built-in names, and searching the samples directory.
 fn resolve_sample_path(name: &str, samples_dir: &std::path::Path) -> PathBuf {
     let trimmed = name.trim();
-    eprintln!("[resolve_sample_path] input: '{}'", trimmed);
+    trace!("[resolve_sample_path] input: '{}'", trimmed);
 
     // If it looks like an absolute file path (contains / or \\ and an extension)
     let as_path = PathBuf::from(trimmed);
@@ -2315,8 +2349,7 @@ fn stop_audio(state: tauri::State<Arc<AppState>>) -> Result<String, String> {
         let _ = sc.stop_all();
     }
     // Increment session ID to invalidate all scheduled threads
-    let mut session = state.session_id.lock();
-    *session = session.wrapping_add(1);
+    state.session_id.fetch_add(1, Ordering::SeqCst);
     // Clear playback state for line highlighting
     *state.playback_start.lock() = None;
     state.active_line_intervals.lock().clear();
@@ -2401,21 +2434,35 @@ fn get_active_lines(state: tauri::State<Arc<AppState>>) -> Vec<usize> {
         return vec![];
     };
 
-    let elapsed = start_instant.elapsed().as_secs_f32();
+    // `playback_start` is the audible epoch, so before the first note sounds
+    // `elapsed` is legitimately negative and nothing is highlighted yet.
+    let now = Instant::now();
+    if now < start_instant {
+        return vec![];
+    }
+    let elapsed = now.duration_since(start_instant).as_secs_f32();
     let intervals = state.active_line_intervals.lock();
 
-    // Find all lines that are active at the current time
-    // An interval is active if elapsed is between start and end
+    // Find all lines active at the current time. Deduplicating with a bitmap
+    // over line numbers rather than `Vec::contains` keeps this linear — this
+    // runs on a 50ms poll for the whole of playback, and a long piece can have
+    // thousands of intervals.
     let mut active = Vec::new();
+    let mut seen = vec![false; 64];
     for interval in intervals.iter() {
-        if elapsed >= interval.start && elapsed <= interval.end {
-            if !active.contains(&interval.line) {
+        // Intervals are emitted in start order, so once we are looking at one
+        // that starts in the future, nothing later can be active.
+        if interval.start > elapsed {
+            break;
+        }
+        if elapsed <= interval.end {
+            if interval.line >= seen.len() {
+                seen.resize(interval.line + 1, false);
+            }
+            if !seen[interval.line] {
+                seen[interval.line] = true;
                 active.push(interval.line);
             }
-        }
-        // Early exit if we've passed all possible intervals
-        if interval.start > elapsed + 1.0 {
-            break;
         }
     }
 
@@ -2662,6 +2709,7 @@ fn preview_synth(synth_name: String, state: tauri::State<Arc<AppState>>) -> Resu
         decay: 0.1,
         sustain: 0.6,
         release: 0.2,
+        ..Envelope::default()
     };
 
     // Always use the built-in cpal engine for preview.
@@ -3648,6 +3696,10 @@ fn collect_usage(
                 constructs.push("at_block".into());
                 collect_usage(commands, synths, samples, effects, constructs, sample_params);
             }
+            ParsedCommand::SwingBlock { commands, .. } => {
+                constructs.push("with_swing".into());
+                collect_usage(commands, synths, samples, effects, constructs, sample_params);
+            }
             ParsedCommand::Cue(_) => { constructs.push("cue".into()); }
             ParsedCommand::Sync(_) => { constructs.push("sync".into()); }
             ParsedCommand::Stop => { constructs.push("stop".into()); }
@@ -4009,6 +4061,9 @@ fn preload_samples_sc(
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
+    // Per-event tracing is off unless PIBEAT_TRACE is set — see src/trace.rs.
+    trace::init_from_env();
+
     // Create recorder first (we'll get sample rate from it)
     let recorder = Recorder::new(44100); // Default, will be updated
 
@@ -4086,7 +4141,7 @@ pub fn run() {
         samples_dir,
         loaded_samples: Mutex::new(HashMap::new()),
         sample_durations: Mutex::new(HashMap::new()),
-        session_id: Mutex::new(0),
+        session_id: AtomicU64::new(0),
         log_messages: Mutex::new(Vec::new()),
         user_samples_dir: Mutex::new(None),
         active_line_intervals: Mutex::new(Vec::new()),

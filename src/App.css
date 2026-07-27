@@ -1199,6 +1199,21 @@ body {
   overflow: hidden;
 }
 
+/* Placeholder occupying the editor's slot while its chunk loads, so the
+   surrounding layout does not jump when Monaco arrives. */
+.editor-skeleton {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--bg-primary);
+  color: var(--text-secondary);
+  font-size: 12px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  opacity: 0.5;
+}
+
 .bottom-section {
   display: flex;
   height: 200px;

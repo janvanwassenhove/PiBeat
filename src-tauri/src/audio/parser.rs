@@ -1,5 +1,6 @@
 use super::engine::AudioCommand;
 use super::synth::{midi_to_freq, note_name_to_midi, Envelope, OscillatorType};
+use crate::trace;
 use rand::rngs::StdRng;
 use rand::Rng;
 use rand::SeedableRng;
@@ -94,6 +95,21 @@ pub enum ParsedCommand {
     /// Schedule commands to execute at specific beat times
     AtBlock {
         times: Vec<f32>,
+        commands: Vec<ParsedCommand>,
+    },
+    /// `with_swing shift, pulse:, tick:, offset:` — one run in every `pulse`
+    /// runs of the block is time-warped by `shift` beats; the rest play
+    /// straight. Mirrors Sonic Pi's implementation, which counts runs with a
+    /// named `tick` and wraps the shifted run in a `time_warp`.
+    SwingBlock {
+        /// Shift in beats. Positive delays, negative pushes the run early.
+        shift: f32,
+        /// How often the shift applies, in block invocations.
+        pulse: u32,
+        /// Tick key, so two swing blocks in one loop count independently.
+        tick_key: String,
+        /// Count offset applied before the modulo.
+        offset: i64,
         commands: Vec<ParsedCommand>,
     },
     /// Set a runtime variable (evaluated at playback time by the scheduler)
@@ -2637,15 +2653,29 @@ fn try_parse_block(
         )));
     }
 
-    // with_swing N do ... end — parse the block and run it at normal timing
-    // Full swing timing is not implemented but the block contents are preserved
+    // with_swing shift, pulse:, tick:, offset: do ... end
+    //
+    // Sonic Pi runs the block normally except once every `pulse` runs, where
+    // it wraps it in `time_warp shift`. Defaults match Sonic Pi: shift 0.1
+    // beats, pulse 4, tick key :swing, offset 0.
     if line.starts_with("with_swing") {
-        eprintln!("[WARN] with_swing: swing timing not applied, running block at normal timing");
         let (body, end_i) = collect_block_body(lines, start_i)?;
         let sub = parse_code_with_context(&body, ctx)?;
+
+        let args = line.strip_prefix("with_swing").unwrap_or("").trim();
+        let shift = extract_param(line, "shift")
+            .or_else(|| first_positional_number(args))
+            .unwrap_or(0.1);
+        let pulse = extract_param(line, "pulse").unwrap_or(4.0).max(1.0) as u32;
+        let offset = extract_param(line, "offset").unwrap_or(0.0).round() as i64;
+        let tick_key = extract_symbol_param(line, "tick").unwrap_or_else(|| "swing".to_string());
+
         return Ok(Some((
-            ParsedCommand::TimesLoop {
-                count: 1,
+            ParsedCommand::SwingBlock {
+                shift,
+                pulse,
+                tick_key,
+                offset,
                 commands: sub,
             },
             end_i,
@@ -3591,12 +3621,7 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
                     amplitude,
                     duration,
                     pan,
-                    envelope: Envelope {
-                        attack,
-                        decay,
-                        sustain: sustain_level,
-                        release,
-                    },
+                    envelope: envelope_from_line(line, attack, decay, sustain_level, release),
                     params: extract_synth_params(line),
                 });
             }
@@ -3647,12 +3672,7 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
                 amplitude,
                 duration,
                 pan,
-                envelope: Envelope {
-                    attack,
-                    decay,
-                    sustain: sustain_level,
-                    release,
-                },
+                envelope: envelope_from_line(line, attack, decay, sustain_level, release),
                 params: extract_synth_params(line),
             })
         }
@@ -3694,12 +3714,13 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
             let sustain_level = extract_param(params_str, "sustain_level");
             let release = extract_param(params_str, "release");
             let sample_envelope = if attack.is_some() || release.is_some() || decay.is_some() {
-                Some(Envelope {
-                    attack: attack.unwrap_or(0.0),
-                    decay: decay.unwrap_or(0.0),
-                    sustain: sustain_level.unwrap_or(1.0),
-                    release: release.unwrap_or(0.0),
-                })
+                Some(envelope_from_line(
+                    params_str,
+                    attack.unwrap_or(0.0),
+                    decay.unwrap_or(0.0),
+                    sustain_level.unwrap_or(1.0),
+                    release.unwrap_or(0.0),
+                ))
             } else {
                 None
             };
@@ -3818,12 +3839,7 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
                 amplitude,
                 duration,
                 pan,
-                envelope: Envelope {
-                    attack,
-                    decay,
-                    sustain: sustain_level,
-                    release,
-                },
+                envelope: envelope_from_line(line, attack, decay, sustain_level, release),
                 params: extract_synth_params(line),
             })
         }
@@ -3838,8 +3854,26 @@ fn parse_line(line: &str, ctx: &mut ParseContext) -> Option<ParsedCommand> {
             Some(ParsedCommand::Log(msg))
         }
         "cue" | "sync" => {
-            eprintln!("[WARN] '{}' is parsed but synchronization is NOT implemented - loops will run independently", line.split_whitespace().next().unwrap_or(""));
-            Some(ParsedCommand::Comment(format!("# {}", line)))
+            // `cue :name` / `sync :name` — the name may be a symbol, a bare
+            // word or a quoted string. Anything after the name (cue's optional
+            // key/value payload) is ignored; PiBeat has no thread-locals for
+            // it to land in.
+            let name = parts
+                .get(1)
+                .map(|raw| {
+                    raw.trim()
+                        .trim_end_matches(',')
+                        .trim_matches('"')
+                        .trim_matches('\'')
+                        .trim_start_matches(':')
+                        .to_string()
+                })
+                .filter(|n| !n.is_empty());
+            match name {
+                Some(name) if parts[0] == "cue" => Some(ParsedCommand::Cue(name)),
+                Some(name) => Some(ParsedCommand::Sync(name)),
+                None => Some(ParsedCommand::Comment(format!("# {}", line))),
+            }
         }
         "at" => Some(ParsedCommand::Comment(format!("# {}", line))),
         "use_random_seed" | "use_random_source" => {
@@ -4071,12 +4105,7 @@ fn parse_play_chord(line: &str, ctx: &ParseContext) -> Option<ParsedCommand> {
     // Generate all chord notes as simultaneous PlayNote commands
     let intervals = chord_intervals(chord_type);
     let params = extract_synth_params(line);
-    let envelope = Envelope {
-        attack,
-        decay,
-        sustain: sustain_level,
-        release,
-    };
+    let envelope = envelope_from_line(line, attack, decay, sustain_level, release);
 
     let note_commands: Vec<ParsedCommand> = intervals
         .iter()
@@ -4247,12 +4276,7 @@ fn parse_play_pattern_timed(line: &str, ctx: &ParseContext) -> Option<ParsedComm
                 amplitude,
                 duration: sustain_time,
                 pan: 0.0,
-                envelope: Envelope {
-                    attack,
-                    decay,
-                    sustain: 1.0,
-                    release,
-                },
+                envelope: envelope_from_line(line, attack, decay, 1.0, release),
                 params: synth_params.clone(),
             });
         }
@@ -4471,6 +4495,68 @@ fn extract_note_expression(rest: &str) -> String {
 
 fn extract_param(line: &str, param: &str) -> Option<f32> {
     extract_param_with_context(line, param, None)
+}
+
+/// Build an [`Envelope`] from already-extracted ADSR values plus the three
+/// shaping opts Sonic Pi exposes on every synth: `attack_level:`,
+/// `decay_level:` and `env_curve:`.
+///
+/// Defaults match Sonic Pi's SynthDef arguments — attack_level 1, decay_level
+/// -1 ("follow sustain_level"), env_curve 1 (linear) — so a `play` line that
+/// sets none of them produces exactly the envelope PiBeat produced before
+/// these opts existed.
+fn envelope_from_line(
+    line: &str,
+    attack: f32,
+    decay: f32,
+    sustain_level: f32,
+    release: f32,
+) -> Envelope {
+    Envelope {
+        attack,
+        decay,
+        sustain: sustain_level,
+        release,
+        attack_level: extract_param(line, "attack_level").unwrap_or(1.0),
+        decay_level: extract_param(line, "decay_level").unwrap_or(-1.0),
+        curve: extract_param(line, "env_curve").unwrap_or(1.0),
+    }
+}
+
+/// Read the first positional numeric argument from an argument list, e.g.
+/// the `0.15` in `with_swing 0.15, pulse: 8 do`. Stops at the first `key:`
+/// token so a leading keyword argument is not mistaken for a positional one.
+fn first_positional_number(args: &str) -> Option<f32> {
+    let args = args.trim().trim_start_matches('(').trim();
+    let first = args.split(',').next()?.trim();
+    if first.is_empty() || first.contains(':') {
+        return None;
+    }
+    first.trim_end_matches(')').trim().parse::<f32>().ok()
+}
+
+/// Extract a `param: :symbol` value, returning the symbol without its colon.
+fn extract_symbol_param(line: &str, param: &str) -> Option<String> {
+    let pat = format!("{}:", param);
+    let pos = line.find(&pat)?;
+    // Word-boundary check so `tick:` does not match `foo_tick:`
+    if pos > 0 {
+        let prev = line.as_bytes()[pos - 1];
+        if prev.is_ascii_alphanumeric() || prev == b'_' {
+            return None;
+        }
+    }
+    let after = line[pos + pat.len()..].trim_start();
+    let value: String = after
+        .chars()
+        .take_while(|c| c.is_ascii_alphanumeric() || *c == '_' || *c == ':')
+        .collect();
+    let value = value.trim_start_matches(':').to_string();
+    if value.is_empty() {
+        None
+    } else {
+        Some(value)
+    }
 }
 
 /// Extract a named parameter value, optionally using context to resolve function calls
@@ -4847,6 +4933,12 @@ fn extract_synth_params(line: &str) -> Vec<(String, f32)> {
         "mod_wave",
         "mod_invert_wave",
         "vel",
+        // Envelope shaping opts. The SC SynthDefs declare these, and unknown
+        // params are forwarded verbatim on /s_new, so listing them here is all
+        // it takes for the SuperCollider engine to honour them.
+        "attack_level",
+        "decay_level",
+        "env_curve",
     ];
     for name in &synth_param_names {
         if let Some(val) = extract_param(line, name) {
@@ -4858,19 +4950,159 @@ fn extract_synth_params(line: &str) -> Vec<(String, f32)> {
 
 /// Convert parsed commands to audio commands with timing
 pub fn commands_to_audio(parsed: &[ParsedCommand], bpm: f32) -> Vec<(f32, AudioCommand)> {
-    let mut fx_counter: u64 = 1; // 0 = no FX context
-    commands_to_audio_ctx(parsed, bpm, 0, &mut fx_counter)
+    // Fast path: nothing in the program coordinates on cues, so a single
+    // expansion pass is all that is needed — which is what PiBeat has always
+    // done. Programs are expanded eagerly (a live_loop becomes 500 unrolled
+    // iterations), so re-running the expansion is not free and is skipped
+    // whenever it cannot change the result.
+    if !uses_cues(parsed) {
+        let mut ctx = ExpandCtx::new(CuePass::Ignore);
+        return commands_to_audio_ctx(parsed, bpm, 0, &mut ctx, 0.0).0;
+    }
+
+    // Pass 1: expand with `sync` as a no-op purely to find out *when* each
+    // `cue` fires.
+    let mut ctx = ExpandCtx::new(CuePass::Collect);
+    let mut result = commands_to_audio_ctx(parsed, bpm, 0, &mut ctx, 0.0).0;
+    let mut cue_times = ctx.cue_times;
+
+    // Later passes resolve each `sync` against the cue map from the previous
+    // pass. Resolving a sync moves events, which can move the cues those
+    // events emit, so iterate until the map settles. Two or three rounds cover
+    // every realistic arrangement (a metronome loop cueing several synced
+    // loops settles after one); the cap keeps a pathological mutual
+    // dependency from looping forever.
+    const MAX_CUE_PASSES: usize = 3;
+    for _ in 0..MAX_CUE_PASSES {
+        let mut pass = ExpandCtx::new(CuePass::Resolve(cue_times.clone()));
+        result = commands_to_audio_ctx(parsed, bpm, 0, &mut pass, 0.0).0;
+        if pass.cue_times == cue_times {
+            break;
+        }
+        cue_times = pass.cue_times;
+    }
+    result
+}
+
+/// Whether the program uses cue-based coordination anywhere in the tree.
+fn uses_cues(parsed: &[ParsedCommand]) -> bool {
+    parsed.iter().any(|cmd| match cmd {
+        ParsedCommand::Cue(_) | ParsedCommand::Sync(_) => true,
+        ParsedCommand::Loop {
+            commands,
+            sync_with,
+            ..
+        } => sync_with.is_some() || uses_cues(commands),
+        ParsedCommand::WithFx { commands, .. }
+        | ParsedCommand::TimesLoop { commands, .. }
+        | ParsedCommand::AtBlock { commands, .. }
+        | ParsedCommand::SwingBlock { commands, .. } => uses_cues(commands),
+        ParsedCommand::ConditionalRandom { command, .. } => {
+            uses_cues(std::slice::from_ref(command.as_ref()))
+        }
+        _ => false,
+    })
+}
+
+/// How the current expansion pass treats `cue` / `sync`.
+#[derive(Debug, Clone)]
+enum CuePass {
+    /// No cues in the program — skip the bookkeeping entirely.
+    Ignore,
+    /// Record when each cue fires; `sync` does not wait.
+    Collect,
+    /// Record cues again *and* make `sync` wait for the next matching cue
+    /// from the supplied map.
+    Resolve(HashMap<String, Vec<f32>>),
+}
+
+/// Mutable state carried through one expansion pass.
+struct ExpandCtx {
+    /// Monotonic allocator for `with_fx` block IDs (0 = no FX context).
+    fx_counter: u64,
+    /// Absolute times, in seconds from the start of the piece, at which each
+    /// named cue fires during this pass.
+    cue_times: HashMap<String, Vec<f32>>,
+    pass: CuePass,
+    /// Per-key invocation counters for `with_swing`, mirroring the `tick:`
+    /// counter Sonic Pi uses to decide which run of the block gets shifted.
+    swing_ticks: HashMap<String, u64>,
+}
+
+impl ExpandCtx {
+    fn new(pass: CuePass) -> Self {
+        Self {
+            fx_counter: 1,
+            cue_times: HashMap::new(),
+            pass,
+            swing_ticks: HashMap::new(),
+        }
+    }
+
+    fn tracking_cues(&self) -> bool {
+        !matches!(self.pass, CuePass::Ignore)
+    }
+
+    fn record_cue(&mut self, name: &str, absolute_time: f32) {
+        if !self.tracking_cues() {
+            return;
+        }
+        self.cue_times
+            .entry(name.to_string())
+            .or_default()
+            .push(absolute_time);
+    }
+
+    /// The absolute time of the first `cue name` strictly after `after`, or
+    /// `None` if no such cue exists (Sonic Pi cannot sync to a cue that has
+    /// already fired, and a `sync` with no matching cue simply never fires).
+    fn next_cue_after(&self, name: &str, after: f32) -> Option<f32> {
+        let CuePass::Resolve(ref map) = self.pass else {
+            return None;
+        };
+        // Small epsilon so a cue emitted at exactly the current instant by
+        // another thread still counts — the two are simultaneous, and Sonic Pi
+        // resolves that in the waiting thread's favour.
+        const EPS: f32 = 1e-4;
+        map.get(name)?
+            .iter()
+            .copied()
+            .filter(|t| *t >= after - EPS)
+            .fold(None, |acc: Option<f32>, t| {
+                Some(acc.map_or(t, |a: f32| a.min(t)))
+            })
+    }
+
+    /// Increment and return the `with_swing` tick counter for `key`.
+    /// Sonic Pi's `tick` returns 0 on its first call, so the first run of a
+    /// swing block is the shifted one.
+    fn next_swing_tick(&mut self, key: &str) -> u64 {
+        let counter = self.swing_ticks.entry(key.to_string()).or_insert(0);
+        let value = *counter;
+        *counter += 1;
+        value
+    }
 }
 
 /// Inner implementation that carries FX context through recursive calls.
+///
 /// `fx_context`: the current FX block ID (0 = no FX, route to hardware).
-/// `fx_counter`: monotonically increasing counter for allocating unique FX IDs.
+/// `ctx`: mutable state for the pass — FX ID allocation, the cue map and the
+///        `with_swing` tick counters.
+/// `base_time`: absolute time, in seconds from the start of the piece, that
+///        this command list starts at. Returned event times stay relative to
+///        the list, but cues need an absolute position to be sync-able.
+///
+/// Returns the events plus the time this list consumed, so a caller can
+/// advance by what actually happened rather than by the nominal duration —
+/// which matters once a `sync` inside the body can stretch an iteration.
 fn commands_to_audio_ctx(
     parsed: &[ParsedCommand],
     bpm: f32,
     fx_context: u64,
-    fx_counter: &mut u64,
-) -> Vec<(f32, AudioCommand)> {
+    ctx: &mut ExpandCtx,
+    base_time: f32,
+) -> (Vec<(f32, AudioCommand)>, f32) {
     let mut result = Vec::new();
     let mut time_offset = 0.0f32;
     let mut current_bpm = bpm;
@@ -4897,6 +5129,8 @@ fn commands_to_audio_ctx(
                         decay: envelope.decay * beat_duration,
                         sustain: envelope.sustain, // sustain is a level (0-1), not a time
                         release: envelope.release * beat_duration,
+                        // Levels and curve shape are unitless — carry them over
+                        ..*envelope
                     };
                     result.push((
                         time_offset,
@@ -4933,6 +5167,7 @@ fn commands_to_audio_ctx(
                     decay: env.decay * beat_duration,
                     sustain: env.sustain,
                     release: env.release * beat_duration,
+                    ..*env
                 });
                 // If sample has lpf: or hpf: params, wrap with FxStart/FxEnd
                 // so the per-voice FX system applies the filter
@@ -4940,8 +5175,8 @@ fn commands_to_audio_ctx(
                 let mut sample_fx_ctx = fx_context;
                 if has_sample_fx {
                     if let Some(cutoff) = lpf {
-                        let lpf_id = *fx_counter;
-                        *fx_counter += 1;
+                        let lpf_id = ctx.fx_counter;
+                        ctx.fx_counter += 1;
                         result.push((
                             time_offset,
                             AudioCommand::FxStart {
@@ -4954,8 +5189,8 @@ fn commands_to_audio_ctx(
                         sample_fx_ctx = lpf_id;
                     }
                     if let Some(cutoff) = hpf {
-                        let hpf_id = *fx_counter;
-                        *fx_counter += 1;
+                        let hpf_id = ctx.fx_counter;
+                        ctx.fx_counter += 1;
                         result.push((
                             time_offset,
                             AudioCommand::FxStart {
@@ -5014,8 +5249,8 @@ fn commands_to_audio_ctx(
                 commands,
             } => {
                 // Allocate a unique FX ID for this block
-                let this_fx_id = *fx_counter;
-                *fx_counter += 1;
+                let this_fx_id = ctx.fx_counter;
+                ctx.fx_counter += 1;
 
                 // Emit FxStart — the SC engine will allocate a private audio bus,
                 // create the FX synth on it, and route subsequent synths through it.
@@ -5037,7 +5272,13 @@ fn commands_to_audio_ctx(
                 // with a VoiceFx chain that applies the stacked effects per-voice.
 
                 // Process inner commands with this FX block as context
-                let inner = commands_to_audio_ctx(commands, current_bpm, this_fx_id, fx_counter);
+                let (inner, inner_consumed) = commands_to_audio_ctx(
+                    commands,
+                    current_bpm,
+                    this_fx_id,
+                    ctx,
+                    base_time + time_offset,
+                );
 
                 // Compute grace period: find the latest time any enclosed note
                 // finishes its release phase. This ensures the FX synth stays
@@ -5060,8 +5301,15 @@ fn commands_to_audio_ctx(
                     result.push((time_offset + t, c));
                 }
 
-                // Update time offset from inner commands
-                let inner_duration = commands_to_duration(commands, current_bpm);
+                // Update time offset from inner commands. When the body can
+                // block on a cue, the time it actually consumed is the honest
+                // figure; otherwise keep using the nominal duration so
+                // existing timing is untouched.
+                let inner_duration = if ctx.tracking_cues() {
+                    inner_consumed
+                } else {
+                    commands_to_duration(commands, current_bpm)
+                };
                 time_offset += inner_duration;
 
                 // Emit FxEnd with grace period — ensures the FX bus stays alive
@@ -5081,28 +5329,52 @@ fn commands_to_audio_ctx(
                 let is_in_thread = name == "thread";
                 let loop_iterations = if is_in_thread || has_stop { 1 } else { 500 };
                 
-                // Handle sync_with: wait until the target loop/cue has fired
-                // For now, we just log it - full implementation would require multi-pass scheduling
+                // `live_loop :x, sync: :y` holds the first iteration until the
+                // next `cue :y`. Sonic Pi only gates the *first* iteration —
+                // afterwards the loop free-runs on its own body length — so
+                // that is what we reproduce here.
+                let mut loop_start_offset = time_offset;
                 if let Some(ref sync_target) = sync_with {
-                    eprintln!(
-                        "[parser] live_loop :{} waiting for sync with :{} (simplified: starts immediately)",
-                        name, sync_target
-                    );
-                    // In a full implementation, we would look up the time when sync_target 
-                    // first completes and start this loop from that time.
-                    // For now, we start immediately (Sonic Pi compatibility improvement pending)
+                    match ctx.next_cue_after(sync_target, base_time + time_offset) {
+                        Some(cue_abs) => {
+                            loop_start_offset = cue_abs - base_time;
+                            trace!(
+                                "[parser] live_loop :{} syncs with :{} at t={:.3}s",
+                                name, sync_target, cue_abs
+                            );
+                        }
+                        None if ctx.tracking_cues() => {
+                            // Only worth warning about once the cue map is
+                            // populated; during the collection pass there is
+                            // nothing to look up yet.
+                            trace!(
+                                "[parser] live_loop :{} waits on :{}, which is never cued — starting immediately",
+                                name, sync_target
+                            );
+                        }
+                        None => {}
+                    }
                 }
-                
-                eprintln!(
+
+                trace!(
                     "[parser] live_loop :{} → {} iteration(s), stop={}, parallel={}, in_thread={}",
                     name, loop_iterations, has_stop, parallel, is_in_thread
                 );
 
-                let loop_start_offset = time_offset;
                 let mut loop_time = loop_start_offset;
                 for iter in 0..loop_iterations {
-                    let inner = commands_to_audio_ctx(commands, current_bpm, fx_context, fx_counter);
-                    let inner_duration = commands_to_duration(commands, current_bpm);
+                    let (inner, inner_consumed) = commands_to_audio_ctx(
+                        commands,
+                        current_bpm,
+                        fx_context,
+                        ctx,
+                        base_time + loop_time,
+                    );
+                    let inner_duration = if ctx.tracking_cues() {
+                        inner_consumed
+                    } else {
+                        commands_to_duration(commands, current_bpm)
+                    };
                     for (t, c) in inner {
                         result.push((loop_time + t, c));
                     }
@@ -5126,8 +5398,18 @@ fn commands_to_audio_ctx(
             ParsedCommand::TimesLoop { count, commands } => {
                 // Repeat commands N times
                 for iter in 0..*count {
-                    let inner = commands_to_audio_ctx(commands, current_bpm, fx_context, fx_counter);
-                    let inner_duration = commands_to_duration(commands, current_bpm);
+                    let (inner, inner_consumed) = commands_to_audio_ctx(
+                        commands,
+                        current_bpm,
+                        fx_context,
+                        ctx,
+                        base_time + time_offset,
+                    );
+                    let inner_duration = if ctx.tracking_cues() {
+                        inner_consumed
+                    } else {
+                        commands_to_duration(commands, current_bpm)
+                    };
                     for (t, c) in inner {
                         result.push((time_offset + t, c));
                     }
@@ -5176,6 +5458,7 @@ fn commands_to_audio_ctx(
                                 decay: env.decay * beat_duration,
                                 sustain: env.sustain,
                                 release: env.release * beat_duration,
+                                ..*env
                             })
                         } else {
                             None
@@ -5185,8 +5468,8 @@ fn commands_to_audio_ctx(
                         let mut cond_fx_ctx = fx_context;
                         if has_sample_fx && include {
                             if let Some(cutoff) = lpf {
-                                let lpf_id = *fx_counter;
-                                *fx_counter += 1;
+                                let lpf_id = ctx.fx_counter;
+                                ctx.fx_counter += 1;
                                 result.push((
                                     time_offset,
                                     AudioCommand::FxStart {
@@ -5199,8 +5482,8 @@ fn commands_to_audio_ctx(
                                 cond_fx_ctx = lpf_id;
                             }
                             if let Some(cutoff) = hpf {
-                                let hpf_id = *fx_counter;
-                                *fx_counter += 1;
+                                let hpf_id = ctx.fx_counter;
+                                ctx.fx_counter += 1;
                                 result.push((
                                     time_offset,
                                     AudioCommand::FxStart {
@@ -5241,12 +5524,21 @@ fn commands_to_audio_ctx(
                     }
                     _ => {
                         if include {
-                            let inner = commands_to_audio_ctx(&[(**command).clone()], current_bpm, fx_context, fx_counter);
+                            let (inner, inner_consumed) = commands_to_audio_ctx(
+                                std::slice::from_ref(command.as_ref()),
+                                current_bpm,
+                                fx_context,
+                                ctx,
+                                base_time + time_offset,
+                            );
                             for (t, c) in inner {
                                 result.push((time_offset + t, c));
                             }
-                            let inner_dur =
-                                commands_to_duration(&[(**command).clone()], current_bpm);
+                            let inner_dur = if ctx.tracking_cues() {
+                                inner_consumed
+                            } else {
+                                commands_to_duration(std::slice::from_ref(command.as_ref()), current_bpm)
+                            };
                             time_offset += inner_dur;
                         }
                     }
@@ -5263,30 +5555,83 @@ fn commands_to_audio_ctx(
                 // at/time_warp blocks schedule events at offsets but do NOT advance
                 // the parent clock. Save and restore time_offset.
                 let saved_offset = time_offset;
-                let inner = commands_to_audio_ctx(commands, current_bpm, fx_context, fx_counter);
+                let (inner, _) = commands_to_audio_ctx(
+                    commands,
+                    current_bpm,
+                    fx_context,
+                    ctx,
+                    base_time + saved_offset,
+                );
                 for (t, c) in inner {
                     result.push((saved_offset + t, c));
                 }
                 // Restore — at/time_warp do not advance the parent timeline
                 time_offset = saved_offset;
             }
-            ParsedCommand::Cue(name) => {
-                // Cue sends a timing signal - in a full implementation, we'd track
-                // the time of this cue so Sync can wait for it
-                eprintln!(
-                    "[parser] cue :{} at time_offset={:.3}s (currently logged only)",
-                    name, time_offset
+            ParsedCommand::SwingBlock {
+                shift,
+                pulse,
+                tick_key,
+                offset,
+                commands,
+            } => {
+                // Sonic Pi runs the block straight except on one invocation in
+                // every `pulse`, where it wraps it in `time_warp shift`. The
+                // counter is a tick, so the very first run is the shifted one.
+                let count = ctx.next_swing_tick(tick_key) as i64;
+                let pulse_i = (*pulse).max(1) as i64;
+                let swung = (count + offset).rem_euclid(pulse_i) == 0;
+                let shift_secs = if swung { shift * beat_duration } else { 0.0 };
+
+                // Like `time_warp`, the shift displaces the block's events but
+                // does not move the enclosing thread's clock.
+                let saved_offset = time_offset;
+                let (inner, _) = commands_to_audio_ctx(
+                    commands,
+                    current_bpm,
+                    fx_context,
+                    ctx,
+                    base_time + saved_offset + shift_secs,
                 );
-                // No duration advance - cue is instantaneous
+                for (t, c) in inner {
+                    // A negative shift can push an event before the start of
+                    // the piece; clamp so it still plays, at t=0.
+                    result.push(((saved_offset + shift_secs + t).max(0.0), c));
+                }
+                time_offset = saved_offset;
+            }
+            ParsedCommand::Cue(name) => {
+                // Record when this cue fires so `sync :name` elsewhere in the
+                // program can line up with it. Cueing is instantaneous — it
+                // does not advance the clock.
+                ctx.record_cue(name, base_time + time_offset);
+                trace!(
+                    "[parser] cue :{} at t={:.3}s",
+                    name,
+                    base_time + time_offset
+                );
             }
             ParsedCommand::Sync(name) => {
-                // Sync waits for a cue - in a full implementation, we'd look up
-                // when that cue fires and delay until then
-                eprintln!(
-                    "[parser] sync :{} at time_offset={:.3}s (currently logged only)",
-                    name, time_offset
-                );
-                // No duration advance - simplified implementation starts immediately
+                // Block until the next matching cue. Sonic Pi cannot sync to a
+                // cue that has already fired, so we look strictly forward; if
+                // nothing ever cues this name the sync is a no-op rather than
+                // a deadlock, which is friendlier than Sonic Pi's silent hang.
+                match ctx.next_cue_after(name, base_time + time_offset) {
+                    Some(cue_abs) => {
+                        let waited = cue_abs - (base_time + time_offset);
+                        time_offset += waited.max(0.0);
+                        trace!(
+                            "[parser] sync :{} waits {:.3}s until t={:.3}s",
+                            name, waited, cue_abs
+                        );
+                    }
+                    None => {
+                        trace!(
+                            "[parser] sync :{} has no matching cue — continuing immediately",
+                            name
+                        );
+                    }
+                }
             }
             ParsedCommand::SetSynth(_) | ParsedCommand::Comment(_) | ParsedCommand::Log(_) => {}
             ParsedCommand::SetVariable { key, value } => {
@@ -5304,7 +5649,7 @@ fn commands_to_audio_ctx(
         }
     }
 
-    result
+    (result, time_offset)
 }
 
 /// Calculate the total duration of a sequence of parsed commands in seconds
@@ -5346,8 +5691,9 @@ pub fn commands_to_duration(parsed: &[ParsedCommand], bpm: f32) -> f32 {
                     dur = target;
                 }
             }
-            ParsedCommand::AtBlock { .. } => {
-                // at/time_warp blocks do NOT advance the parent timeline duration
+            ParsedCommand::AtBlock { .. } | ParsedCommand::SwingBlock { .. } => {
+                // at/time_warp/with_swing blocks displace their contents but do
+                // NOT advance the parent timeline duration
             }
             ParsedCommand::Stop => break,
             _ => {}

@@ -1,6 +1,7 @@
 import React, { useRef, useEffect, useCallback } from 'react';
 import { invoke } from '@tauri-apps/api/core';
 import { useStore } from '../store';
+import { useShallow } from 'zustand/react/shallow';
 
 // ─── Types matching Rust PerformanceSnapshot ────────────────────────────────
 
@@ -247,7 +248,17 @@ const BandVisualizer: React.FC = () => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const snapshotRef = useRef<PerformanceSnapshot | null>(null);
   const localFrameRef = useRef<number>(0);
-  const { isPlaying, showBandVisualizer, theme } = useStore();
+  const {
+    isPlaying,
+    showBandVisualizer,
+    theme,
+  } = useStore(
+    useShallow((s) => ({
+      isPlaying: s.isPlaying,
+      showBandVisualizer: s.showBandVisualizer,
+      theme: s.theme,
+    })),
+  );
 
   // Poll the Rust visual engine for snapshots and render
   const render = useCallback(() => {
