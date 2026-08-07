@@ -27,6 +27,12 @@ Welcome to the PiBeat documentation! This directory contains comprehensive guide
   - Smart context management
   - Retry logic with exponential backoff
 
+- **[AUTO_UPDATE.md](AUTO_UPDATE.md)** - In-app update notifications
+  - How the background check, silent download and install banner work
+  - Platform support (full on Windows, check-only on macOS/Linux)
+  - Why the check reports a status rather than just "found / didn't"
+  - Why not `tauri-plugin-updater` (yet)
+
 - **[PERFORMANCE_AUDIT.md](PERFORMANCE_AUDIT.md)** - Where PiBeat spends time and CPU
   - Visual loading: bundling Monaco, lazy editor, chunk splitting
   - Idle cost: scope polling, the visual engine's frame loop
