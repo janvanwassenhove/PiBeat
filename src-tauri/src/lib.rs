@@ -1,6 +1,7 @@
 pub mod audio;
 #[macro_use]
 pub mod trace;
+pub mod updater;
 
 use audio::engine::{AudioCommand, AudioEngine};
 use audio::parser::{commands_to_audio, validate_and_parse, ParsedCommand};
@@ -4156,10 +4157,19 @@ pub fn run() {
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_global_shortcut::Builder::new().build())
         .manage(app_state.clone())
+        .manage(Arc::new(UpdateState::default()))
         .setup(move |app| {
-            // Register global shortcuts individually so one failure doesn't block others
+            // Auto-update: background check shortly after launch, then every
+            // four hours. Staging happens silently; the UI only hears about it
+            // once the installer is on disk (see the update section below).
             {
                 use tauri::Manager;
+                let update_state = app.state::<Arc<UpdateState>>().inner().clone();
+                spawn_update_checker(app.handle().clone(), update_state);
+            }
+
+            // Register global shortcuts individually so one failure doesn't block others
+            {
                 use tauri_plugin_global_shortcut::{GlobalShortcutExt, ShortcutState};
                 let gs = app.global_shortcut();
                 // Unregister all shortcuts first to avoid "already registered" errors
@@ -4256,7 +4266,353 @@ pub fn run() {
             get_visual_config,
             set_visual_config,
             validate_parity,
+            check_for_update,
+            get_staged_update,
+            install_update,
+            dismiss_update,
+            get_app_version,
+            open_releases_page,
         ])
         .run(tauri::generate_context!())
         .expect("error while running tauri application");
+}
+
+// ============================================================================
+// Auto-update — mirrors AURA's flow (apps/desktop/main.cjs + updater.cjs)
+//
+// The shape, and the reasons behind it:
+//
+//   * The check runs in the background and the download runs silently. The
+//     user is interrupted exactly once, at the end, by a quiet banner — not by
+//     a modal that appears first and *then* starts downloading, leaving them
+//     watching a progress-less dialog for something they already agreed to.
+//   * Every failure is silent. A background update check that pops up network
+//     errors is worse than one that finds nothing.
+//   * A manual check reports *why* nothing happened. Without that, "no update"
+//     and "update checking is broken" look identical from the outside.
+// ============================================================================
+
+use updater::UpdateStatus;
+
+/// An installer that has been downloaded and is ready to run.
+#[derive(Debug, Clone, Serialize)]
+struct StagedUpdate {
+    tag: String,
+    version: String,
+    installer_path: PathBuf,
+}
+
+/// Update state shared between the background task and the commands.
+#[derive(Default)]
+struct UpdateState {
+    staged: Mutex<Option<StagedUpdate>>,
+    /// Guards against two checks overlapping (background tick + manual click).
+    checking: AtomicBool,
+}
+
+/// First check this long after launch, so it never competes with startup —
+/// booting SuperCollider and scanning samples matter more than an update check.
+const UPDATE_FIRST_CHECK_DELAY: Duration = Duration::from_secs(30);
+/// Then on this interval, matching AURA.
+const UPDATE_CHECK_INTERVAL: Duration = Duration::from_secs(4 * 60 * 60);
+
+/// Optional token, needed only while the repository is private.
+fn update_token() -> Option<String> {
+    std::env::var("GITHUB_TOKEN").ok().filter(|t| !t.is_empty())
+}
+
+/// File remembering a version the user chose to skip.
+fn skip_file(app: &tauri::AppHandle) -> Option<PathBuf> {
+    use tauri::Manager;
+    let dir = app.path().app_config_dir().ok()?;
+    let _ = std::fs::create_dir_all(&dir);
+    Some(dir.join("update-skip.json"))
+}
+
+fn skipped_version(app: &tauri::AppHandle) -> Option<String> {
+    let path = skip_file(app)?;
+    let raw = std::fs::read_to_string(path).ok()?;
+    let value: serde_json::Value = serde_json::from_str(&raw).ok()?;
+    value.get("skip")?.as_str().map(|s| s.to_string())
+}
+
+fn set_skipped_version(app: &tauri::AppHandle, tag: &str) {
+    if let Some(path) = skip_file(app) {
+        let body = serde_json::json!({ "skip": tag }).to_string();
+        if let Err(e) = std::fs::write(&path, body) {
+            eprintln!("[update] could not persist skipped version: {e}");
+        }
+    }
+}
+
+/// Run a check, and on Windows stage the installer so installing later is
+/// instant. Returns the status so a manual check can explain the outcome.
+fn run_update_check(app: &tauri::AppHandle, state: &Arc<UpdateState>) -> UpdateStatus {
+    use tauri::Emitter;
+
+    // A second check while one is in flight would duplicate the download.
+    if state.checking.swap(true, Ordering::SeqCst) {
+        return UpdateStatus::Error {
+            reason: "a check is already running".to_string(),
+        };
+    }
+    // Reset the flag however we leave this function.
+    struct Guard<'a>(&'a AtomicBool);
+    impl Drop for Guard<'_> {
+        fn drop(&mut self) {
+            self.0.store(false, Ordering::SeqCst);
+        }
+    }
+    let _guard = Guard(&state.checking);
+
+    let current = app.package_info().version.to_string();
+    let status = updater::check_for_update(
+        &updater::UreqClient,
+        &current,
+        update_token().as_deref(),
+    );
+
+    let UpdateStatus::Update { ref update } = status else {
+        return status;
+    };
+
+    // Nothing to stage: no installable artifact for this platform (macOS and
+    // Linux need a .dmg/.AppImage opened by hand), or it is already staged.
+    let Some(asset) = update.asset.clone() else {
+        return status;
+    };
+    if state.staged.lock().is_some() {
+        return status;
+    }
+
+    let dest = std::env::temp_dir().join(&asset.name);
+    eprintln!("[update] downloading {} in the background", asset.name);
+    if let Err(e) = updater::download_asset(&asset, update_token().as_deref(), &dest) {
+        // Silent by design — the next check tries again.
+        eprintln!("[update] background download failed: {e}");
+        return status;
+    }
+
+    *state.staged.lock() = Some(StagedUpdate {
+        tag: update.tag.clone(),
+        version: update.version.clone(),
+        installer_path: dest,
+    });
+    eprintln!("[update] {} staged and ready to install", update.version);
+
+    // Only now does the UI hear about it, so "install" is one click away.
+    let _ = app.emit(
+        "update-ready",
+        serde_json::json!({ "version": update.version, "tag": update.tag }),
+    );
+    status
+}
+
+/// Background check: once shortly after launch, then every four hours.
+///
+/// Debug builds are excluded — a dev build is by definition not the released
+/// version, so it would offer an "update" on every run.
+fn spawn_update_checker(app: tauri::AppHandle, state: Arc<UpdateState>) {
+    if cfg!(debug_assertions) {
+        eprintln!("[update] background checks disabled in a debug build");
+        return;
+    }
+    std::thread::Builder::new()
+        .name("update-check".to_string())
+        .spawn(move || {
+            std::thread::sleep(UPDATE_FIRST_CHECK_DELAY);
+            loop {
+                // A version the user skipped stays skipped.
+                let skipped = skipped_version(&app);
+                let status = run_update_check(&app, &state);
+                if let UpdateStatus::Update { ref update } = status {
+                    if Some(&update.tag) == skipped.as_ref() {
+                        *state.staged.lock() = None;
+                    }
+                }
+                std::thread::sleep(UPDATE_CHECK_INTERVAL);
+            }
+        })
+        .ok();
+}
+
+/// What a manual check found — the status plus whether an installer is staged,
+/// so the About dialog can say "downloading…" rather than just "update found".
+#[derive(Debug, Clone, Serialize)]
+struct ManualCheckResult {
+    #[serde(flatten)]
+    status: UpdateStatus,
+    /// Version currently running, for "you're on X, latest is Y".
+    current_version: String,
+    /// True once the installer is on disk and the banner is showing.
+    staged: bool,
+}
+
+/// Check for updates on demand (About dialog).
+#[tauri::command]
+fn check_for_update(
+    app: tauri::AppHandle,
+    state: tauri::State<Arc<UpdateState>>,
+) -> ManualCheckResult {
+    let status = run_update_check(&app, &state);
+    ManualCheckResult {
+        current_version: app.package_info().version.to_string(),
+        staged: state.staged.lock().is_some(),
+        status,
+    }
+}
+
+/// The staged update, if the UI needs to re-read it (e.g. after a reload that
+/// missed the `update-ready` event).
+#[tauri::command]
+fn get_staged_update(state: tauri::State<Arc<UpdateState>>) -> Option<serde_json::Value> {
+    state.staged.lock().as_ref().map(|s| {
+        serde_json::json!({ "version": s.version, "tag": s.tag })
+    })
+}
+
+/// Result of asking to install.
+#[derive(Debug, Clone, Serialize)]
+struct InstallResult {
+    ok: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    error: Option<String>,
+}
+
+impl InstallResult {
+    fn ok() -> Self {
+        Self { ok: true, error: None }
+    }
+    fn err(msg: impl Into<String>) -> Self {
+        Self { ok: false, error: Some(msg.into()) }
+    }
+}
+
+/// Install the staged update and relaunch.
+///
+/// On Windows a small script owns the sequence, because each step needs the
+/// previous one to have finished: wait for this process to exit (the installer
+/// cannot replace files that are in use), install silently, then start the new
+/// build. AURA learned this the hard way — spawning the installer and quitting
+/// *did* install, but never came back, which reads as "nothing happened". The
+/// script also leaves a log, so a failed update can be read instead of guessed.
+#[tauri::command]
+fn install_update(
+    app: tauri::AppHandle,
+    state: tauri::State<Arc<UpdateState>>,
+) -> InstallResult {
+    let Some(staged) = state.staged.lock().clone() else {
+        return InstallResult::err("No update is staged.");
+    };
+
+    // A staged file can vanish — temp gets cleaned, disks fill up. Saying so
+    // beats spawning nothing and quitting, which also reads as "did nothing".
+    if !staged.installer_path.exists() {
+        *state.staged.lock() = None;
+        return InstallResult::err("The downloaded installer has gone. Please check again.");
+    }
+
+    #[cfg(target_os = "windows")]
+    {
+        use tauri::Manager;
+        let exe = match std::env::current_exe() {
+            Ok(p) => p,
+            Err(e) => return InstallResult::err(format!("Cannot locate PiBeat: {e}")),
+        };
+        let log_path = app
+            .path()
+            .app_log_dir()
+            .unwrap_or_else(|_| std::env::temp_dir())
+            .join("update-install.log");
+        let _ = std::fs::create_dir_all(log_path.parent().unwrap_or(&std::env::temp_dir()));
+        let script_path = std::env::temp_dir().join("pibeat-apply-update.cmd");
+
+        // `call`, not a bare invocation and not `start /wait`: a bare call to a
+        // script target hands over control for good (PiBeat would install and
+        // never come back), and `start /wait` opens a console window and blocks.
+        // The brackets around %errorlevel% are not decoration either — without
+        // them cmd reads a leading 0 as a stream number and redirects instead
+        // of echoing, and the line silently vanishes from the log.
+        let script = [
+            "@echo off".to_string(),
+            format!(r#"echo [%date% %time%] applying {}> "{}""#, staged.version, log_path.display()),
+            "ping -n 4 127.0.0.1 >nul".to_string(), // let the quitting app release its files
+            format!(r#"call "{}" /S"#, staged.installer_path.display()),
+            format!(r#"echo [%date% %time%] installer exit=[%errorlevel%]>> "{}""#, log_path.display()),
+            "ping -n 3 127.0.0.1 >nul".to_string(),
+            format!(r#"start "" "{}""#, exe.display()),
+            format!(r#"echo [%date% %time%] relaunched>> "{}""#, log_path.display()),
+        ]
+        .join("\r\n");
+
+        if let Err(e) = std::fs::write(&script_path, script) {
+            return InstallResult::err(format!("Cannot write the update script: {e}"));
+        }
+
+        use std::os::windows::process::CommandExt;
+        const CREATE_NO_WINDOW: u32 = 0x0800_0000;
+        const DETACHED_PROCESS: u32 = 0x0000_0008;
+        match std::process::Command::new("cmd.exe")
+            .args(["/c", &script_path.to_string_lossy()])
+            .creation_flags(CREATE_NO_WINDOW | DETACHED_PROCESS)
+            .spawn()
+        {
+            Ok(_) => {
+                let handle = app.clone();
+                // Give the script a moment to start before the process dies.
+                std::thread::spawn(move || {
+                    std::thread::sleep(Duration::from_millis(800));
+                    handle.exit(0);
+                });
+                InstallResult::ok()
+            }
+            Err(e) => InstallResult::err(format!("Cannot start the installer: {e}")),
+        }
+    }
+
+    // macOS and Linux have no silent installer here — a .dmg or .AppImage has
+    // to be opened by hand, so the banner never appears on those platforms and
+    // this is only reachable if that ever changes.
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = app;
+        InstallResult::err("Automatic install is only supported on Windows. Please download the new version from the releases page.")
+    }
+}
+
+/// Hide the banner for now, or for good.
+///
+/// `skip` persists the tag so this version is never offered again; without it
+/// the banner simply goes away and comes back on the next check — "Later"
+/// should not silently mean "never".
+#[tauri::command]
+fn dismiss_update(
+    app: tauri::AppHandle,
+    state: tauri::State<Arc<UpdateState>>,
+    tag: Option<String>,
+    skip: Option<bool>,
+) {
+    if skip.unwrap_or(false) {
+        if let Some(tag) = tag.as_deref().filter(|t| !t.is_empty()) {
+            set_skipped_version(&app, tag);
+        }
+    }
+    *state.staged.lock() = None;
+}
+
+/// The running version, for the About dialog.
+#[tauri::command]
+fn get_app_version(app: tauri::AppHandle) -> String {
+    app.package_info().version.to_string()
+}
+
+/// Open the releases page — the fallback when there is nothing installable
+/// for this platform.
+#[tauri::command]
+fn open_releases_page(app: tauri::AppHandle) -> Result<(), String> {
+    use tauri_plugin_opener::OpenerExt;
+    let url = format!("https://github.com/{}/releases/latest", updater::REPO);
+    app.opener()
+        .open_url(url, None::<&str>)
+        .map_err(|e| e.to_string())
 }

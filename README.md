@@ -50,6 +50,7 @@ Comprehensive documentation is available in the [docs/](docs/) folder:
 
 - **[Agent Guide](docs/AGENT_GUIDE.md)** - Set up and use the AI agent (OpenAI, Anthropic, Local)
 - **[Debugging Guide](docs/DEBUGGING_AGENT.md)** - Troubleshoot API and agent issues
+- **[Auto-Update](docs/AUTO_UPDATE.md)** - In-app update notifications and how they work
 - **[Parser Limitations](docs/PARSER_LIMITATIONS.md)** - Supported Sonic Pi features
 - **[Reactive Agent Features](docs/REACTIVE_AGENT_FEATURES.md)** - Advanced agent capabilities
 - **[LLM API Compatibility](docs/LLM_API_COMPATIBILITY.md)** - OpenAI/Anthropic API reference
@@ -90,6 +91,7 @@ The name subtly nods to the mathematical precision behind Sonic Pi (π), while "
 - ✅ **CUE markers** for looping and navigation
 - ✅ **50+ scales and 20+ chord types** for music theory
 - ✅ **Pattern generation** with rings, spreads (Euclidean rhythms), randomization
+- ✅ **Auto-update** - new versions download in the background and install in one click
 
 ## 🔧 Development
 

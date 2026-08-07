@@ -1,6 +1,7 @@
 ﻿import React, { useEffect, useState, useRef, useCallback } from "react";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { listen } from "@tauri-apps/api/event";
+import { invoke } from "@tauri-apps/api/core";
 import { openUrl } from "@tauri-apps/plugin-opener";
 import Toolbar from "./components/Toolbar";
 import BufferTabs from "./components/BufferTabs";
@@ -16,6 +17,7 @@ import AgentChat from "./components/AgentChat";
 import CuePanel from "./components/CuePanel";
 import UserSamplePanel from "./components/UserSamplePanel";
 import BandControlPanel from "./components/BandControlPanel";
+import UpdateBanner from "./components/UpdateBanner";
 import { useStore, AppTheme } from "./store";
 import { useShallow } from "zustand/react/shallow";
 import "./App.css";
@@ -79,8 +81,44 @@ const ThemeSwitcher: React.FC<{ theme: AppTheme; setTheme: (t: AppTheme) => void
   );
 };
 
+/** Outcome of a manual update check, mirroring the Rust `UpdateStatus`. */
+type CheckResult =
+  | { status: 'update'; update: { version: string; tag: string }; staged: boolean; current_version: string }
+  | { status: 'current'; latest: string; staged: boolean; current_version: string }
+  | { status: 'unauthorized'; staged: boolean; current_version: string }
+  | { status: 'error'; reason: string; staged: boolean; current_version: string };
+
+/**
+ * Turn a check result into a sentence.
+ *
+ * Every branch says something. A check that silently finds nothing is
+ * indistinguishable from a broken one — the confusion AURA hit while its repo
+ * was still private, and the reason the Rust side reports a status rather than
+ * just an optional update.
+ */
+function describeCheck(result: CheckResult): string {
+  switch (result.status) {
+    case 'update':
+      return result.staged
+        ? `PiBeat ${result.update.version} is downloaded and ready — see the bar at the top.`
+        : `PiBeat ${result.update.version} is available. Automatic install is Windows-only; use the releases page.`;
+    case 'current':
+      return `You're on the latest version (${result.current_version}).`;
+    case 'unauthorized':
+      return 'Cannot read the releases — the repository may be private. Set GITHUB_TOKEN to check.';
+    case 'error':
+      return `Could not check for updates: ${result.reason}`;
+  }
+}
+
 const AboutModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, onClose }) => {
   const ref = useRef<HTMLDivElement>(null);
+  const [checking, setChecking] = useState(false);
+  const [checkMessage, setCheckMessage] = useState('');
+  // Shown when a newer release exists but this platform has no installer for
+  // it — a message telling someone to "use the releases page" should come with
+  // a way to get there.
+  const [showReleasesLink, setShowReleasesLink] = useState(false);
 
   useEffect(() => {
     if (!open) return;
@@ -89,9 +127,35 @@ const AboutModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, on
     return () => window.removeEventListener('keydown', handler);
   }, [open, onClose]);
 
+  // Don't leave a stale result from a previous visit sitting in the dialog.
+  useEffect(() => {
+    if (!open) {
+      setCheckMessage('');
+      setShowReleasesLink(false);
+    }
+  }, [open]);
+
   const handleLink = useCallback((url: string) => (e: React.MouseEvent) => {
     e.preventDefault();
     openUrl(url);
+  }, []);
+
+  const checkUpdates = useCallback(async () => {
+    setChecking(true);
+    setCheckMessage('');
+    try {
+      const result = await invoke<CheckResult>('check_for_update');
+      setCheckMessage(describeCheck(result));
+      setShowReleasesLink(result.status === 'update' && !result.staged);
+    } catch (e) {
+      setCheckMessage(`Could not check for updates: ${e}`);
+    } finally {
+      setChecking(false);
+    }
+  }, []);
+
+  const openReleases = useCallback(() => {
+    invoke('open_releases_page').catch(() => {});
   }, []);
 
   if (!open) return null;
@@ -114,6 +178,17 @@ const AboutModal: React.FC<{ open: boolean; onClose: () => void }> = ({ open, on
           <a href="https://github.com/janvanwassenhove/PiBeat" onClick={handleLink('https://github.com/janvanwassenhove/PiBeat')}>GitHub</a>
         </div>
         <div className="about-copyright">© 2025–2026 Jan Van Wassenhove</div>
+        <div className="about-update">
+          <button className="about-check-btn" onClick={checkUpdates} disabled={checking}>
+            {checking ? 'Checking…' : 'Check for updates'}
+          </button>
+          {showReleasesLink && (
+            <button className="about-check-btn" onClick={openReleases}>
+              Open releases page
+            </button>
+          )}
+          {checkMessage && <div className="about-check-result">{checkMessage}</div>}
+        </div>
         <button className="about-close-btn" onClick={onClose}>Close</button>
       </div>
     </div>
@@ -324,6 +399,8 @@ const App: React.FC = () => {
           </button>
         </div>
       </div>
+
+      <UpdateBanner />
 
       <div className="app-body">
         <div className={`main-area ${hasAttachedPanel ? "with-panel" : ""}`}>
