@@ -32,7 +32,7 @@ if (-not (Test-Path $OutputDir)) {
 Write-Host "[..] Regenerating compile_all.scd from sc_synthdefs.rs..." -ForegroundColor Yellow
 Push-Location (Join-Path $ProjectRoot "src-tauri")
 try {
-    & cargo run --quiet --bin gen_synthdefs -- $OutputDir
+    & cargo run --quiet --example gen_synthdefs -- $OutputDir
     if ($LASTEXITCODE -ne 0) { throw "gen_synthdefs exited with $LASTEXITCODE" }
 }
 catch {

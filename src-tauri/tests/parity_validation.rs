@@ -3667,3 +3667,35 @@ fn parity_env_segment_shapes() {
     let v = env_segment(0.0, 1.0, 0.5, 2.0);
     assert!(v.is_finite(), "exponential segment from 0 should be finite");
 }
+
+// ============================================================================
+// SECTION: release packaging
+// ============================================================================
+
+/// Tauri's bundler installs a binary chosen from the crate's binary targets.
+/// With more than one it can pick the wrong one, and nothing about the build
+/// says so — v0.3.0 shipped a 2 MB SynthDef-generator helper in place of PiBeat
+/// on every platform, because that helper lived in `src/bin/`. Every installer
+/// came out 82-93% smaller than the previous release and still built, tested
+/// and published green.
+///
+/// Dev-only tools belong in `examples/`, which is never bundled.
+#[test]
+fn crate_ships_exactly_one_binary() {
+    let bin_dir = std::path::Path::new("src/bin");
+    if !bin_dir.exists() {
+        return; // No extra binaries at all — the intended state.
+    }
+    let extras: Vec<String> = std::fs::read_dir(bin_dir)
+        .expect("src/bin should be readable")
+        .filter_map(|e| e.ok())
+        .map(|e| e.file_name().to_string_lossy().to_string())
+        .filter(|n| n.ends_with(".rs"))
+        .collect();
+    assert!(
+        extras.is_empty(),
+        "src/bin/ adds binary targets that Tauri may bundle instead of PiBeat: {}.\n\
+         Move dev-only tools to src-tauri/examples/ (run with `cargo run --example <name>`).",
+        extras.join(", ")
+    );
+}

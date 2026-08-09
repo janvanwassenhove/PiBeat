@@ -7,8 +7,13 @@
 //! sclang. This binary regenerates that script so the two cannot drift.
 //!
 //! ```text
-//! cargo run --bin gen_synthdefs -- src-tauri/sc-bundle/synthdefs
+//! cargo run --example gen_synthdefs -- src-tauri/sc-bundle/synthdefs
 //! ```
+//!
+//! Deliberately an example and not `src/bin/`. Anything under `src/bin/` is a
+//! shipped binary, and Tauri's bundler picks a binary from that set — v0.3.0
+//! went out with this 2 MB helper installed in place of PiBeat itself. A
+//! dev-only code generator has no business in the release bundle.
 //!
 //! The argument is the directory the compiled `.scsyndef` files should be
 //! written to; `compile_all.scd` is written into the same directory.
