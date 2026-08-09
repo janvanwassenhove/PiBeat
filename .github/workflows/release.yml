@@ -4,12 +4,44 @@ on:
   push:
     tags:
       - 'v*'
+  # Manual trigger, for environments where pushing a tag is not possible.
+  # The tag is created by tauri-action at the ref this run was started from,
+  # so dispatch it against the commit you actually want released.
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: 'Release tag, e.g. v0.3.0 (must match the version in package.json)'
+        required: true
+        type: string
 
 permissions:
   contents: write
 
 jobs:
+  # A tag push already carries the tag in github.ref_name; a manual run gets it
+  # from the input. Resolved once here so both jobs use the same value.
+  resolve-tag:
+    runs-on: ubuntu-latest
+    outputs:
+      tag: ${{ steps.pick.outputs.tag }}
+    steps:
+      - name: Pick the tag
+        id: pick
+        run: |
+          if [ "${{ github.event_name }}" = "workflow_dispatch" ]; then
+            TAG="${{ inputs.tag }}"
+          else
+            TAG="${{ github.ref_name }}"
+          fi
+          case "$TAG" in
+            v*) ;;
+            *) echo "::error::Tag '$TAG' must start with 'v'"; exit 1 ;;
+          esac
+          echo "tag=$TAG" >> "$GITHUB_OUTPUT"
+          echo "Releasing $TAG"
+
   build:
+    needs: resolve-tag
     strategy:
       matrix:
         include:
@@ -69,8 +101,8 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          tagName: ${{ github.ref_name }}
-          releaseName: 'PiBeat ${{ github.ref_name }}'
+          tagName: ${{ needs.resolve-tag.outputs.tag }}
+          releaseName: 'PiBeat ${{ needs.resolve-tag.outputs.tag }}'
           releaseDraft: true
           prerelease: false
           args: ${{ matrix.args }}
@@ -111,7 +143,7 @@ jobs:
             3. *(Optional)* Open Settings in Agent Chat to configure an AI provider
 
   publish-release:
-    needs: build
+    needs: [resolve-tag, build]
     runs-on: ubuntu-latest
 
     steps:
@@ -119,6 +151,6 @@ jobs:
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
         run: |
-          gh release edit "${{ github.ref_name }}" \
+          gh release edit "${{ needs.resolve-tag.outputs.tag }}" \
             --repo "${{ github.repository }}" \
             --draft=false
